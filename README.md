@@ -17,14 +17,45 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    cp .env.example .env
    ```
 
-2. Build and run with Docker Compose:
+2. Use the pre-built image from GitHub Container Registry with Docker Compose:
+   ```yaml
+   services:
+     kimicord:
+       image: ghcr.io/zhanmu-tw/kimicord:1.0.0
+       environment:
+         DISCORD_TOKEN: ${DISCORD_TOKEN}
+         DISCORD_APP_ID: ${DISCORD_APP_ID}
+         GUILD_ID: ${GUILD_ID}
+         ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
+         CHANNEL_MODE_IDS: ${CHANNEL_MODE_IDS}
+         FORUM_MODE_IDS: ${FORUM_MODE_IDS}
+         KIMI_WORK_DIR: ${KIMI_WORK_DIR:-/workspace}
+         KIMI_MODEL: ${KIMI_MODEL:-kimi-k2.5}
+         KIMI_YOLO: ${KIMI_YOLO:-false}
+         SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-1800000}
+         SHOW_THINKING: ${SHOW_THINKING:-false}
+         SHOW_STATUS_EMBED: ${SHOW_STATUS_EMBED:-false}
+       ports:
+         - "${DASHBOARD_PORT:-3000}:${DASHBOARD_PORT:-3000}"
+       volumes:
+         - ./data:/app/data
+         - ./kimi-data:/root/.kimi
+       restart: unless-stopped
+   ```
+
+   Save it as `docker-compose.yml` and run:
+   ```bash
+   docker compose up -d
+   ```
+
+   Or build from source instead:
    ```bash
    docker compose up --build -d
    ```
 
 3. Log in to Kimi CLI inside the container:
    ```bash
-   docker compose exec bot bash
+   docker compose exec kimicord bash
    kimi login
    ```
 
