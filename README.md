@@ -59,12 +59,7 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    kimi login
    ```
 
-4. Create `/root/.kimi/config.toml` with your model:
-   ```toml
-   model = "kimi-k2.5"
-   ```
-
-5. Restart the bot if needed:
+4. Restart the bot if needed:
    ```bash
    docker compose restart
    ```
