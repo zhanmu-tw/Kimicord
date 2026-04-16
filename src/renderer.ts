@@ -72,7 +72,8 @@ export class TurnRenderer {
         const p = event.params.payload as ToolCallPayload;
         this.pendingToolCalls.set(p.id, { name: p.function.name, args: p.function.arguments ?? "", posted: false });
         this.lastToolCallId = p.id;
-        if (p.function.arguments) {
+        const initialArgs = p.function.arguments ?? "";
+        if (initialArgs.trim().endsWith("}")) {
           this.flushToolCall(p.id).catch(console.error);
         }
         break;
