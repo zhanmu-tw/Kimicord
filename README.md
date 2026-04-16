@@ -8,6 +8,8 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 
 > ⭐ If you find Kimicord useful, please consider leaving a star on the repository — it really helps!
 
+**Why Kimicord?** After trying other agents like Hermes, OpenClaw, and more, I wanted a solid coding agent that could live inside Discord. That way I can forward issues from my self-hosted Gitea straight to a bot and have it carry out the work. Kimi CLI's Wire mode made this possible — I can even run my own self hosted models (like Qwen 3.5 35B) just by changing the kimi config.yaml
+
 ## Features
 
 - **Channel mode** — respond to @mentions or all messages in configured channels
