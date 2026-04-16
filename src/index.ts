@@ -21,7 +21,6 @@ async function main() {
   client.once("ready", async () => {
     console.log(`Logged in as ${client.user?.tag}`);
     await registerCommands();
-    console.log("Slash commands registered");
 
     // Resume dormant sessions
     const rows = listAllSessions();

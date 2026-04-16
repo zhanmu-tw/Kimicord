@@ -3,9 +3,9 @@ import { KimiSession } from "./session.js";
 import { TurnRenderer } from "./renderer.js";
 import { postApproval, postQuestion, postToolCallRequest } from "./approvals.js";
 import { getSessionByThread } from "./db.js";
-import { WireEventMessage } from "./wire.js";
+import { WireEventMessage, QuestionRequestPayload } from "./wire.js";
 
-export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string) {
+export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string): Promise<TurnRenderer> {
   const row = getSessionByThread(thread.id);
   const renderer = new TurnRenderer(
     thread,
@@ -26,15 +26,18 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
         req.wireRequestId,
         req.payload as { action: string; description?: string; command?: unknown }
       );
+      await renderer.updateStatus("⏸️ Waiting for approval");
     } else if (req.type === "QuestionRequest") {
       await postQuestion(
         thread,
         session,
         req.wireRequestId,
-        req.payload as { question: string; suggestions?: string[] }
+        req.payload as QuestionRequestPayload
       );
+      await renderer.updateStatus("⏸️ Waiting for answer");
     } else if (req.type === "ToolCallRequest") {
       await postToolCallRequest(thread, session, req.wireRequestId, req.payload);
+      await renderer.updateStatus("⏸️ Waiting for approval");
     }
   };
   const onCrashed = async () => {
@@ -83,7 +86,9 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
         embeds: [new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626)],
       });
     }
-    return;
+    cleanup();
+    return renderer;
   }
   cleanup();
+  return renderer;
 }

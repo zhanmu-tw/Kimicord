@@ -6,7 +6,7 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 
 - **Channel mode** — respond to @mentions or all messages in configured channels
 - **Forum mode** — auto-reply to new forum posts
-- **Slash commands** — `/new`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, `/init`
+- **Slash commands** — `/new`, `/interrupt`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, `/init`, `/test`
 - **Dashboard** — lightweight HTTP dashboard for live session stats
 - **MCP support** — auto-detects `/app/data/mcp.json` and passes it to `kimi`
 
@@ -63,6 +63,25 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    ```bash
    docker compose restart
    ```
+
+## Slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/new [prompt]` | Force-start a new session in the current thread |
+| `/interrupt` | Interrupt the current turn without killing the session |
+| `/stop` | Cancel the current turn and kill the session |
+| `/status` | Show session info |
+| `/workdir <path>` | Set working directory for the thread's next session |
+| `/sessions` | List all sessions (admin only) |
+| `/compact [focus]` | Compact the Kimi context |
+| `/clear` | Clear the Kimi context |
+| `/yolo` | Toggle YOLO mode |
+| `/plan [mode]` | Toggle or view plan mode |
+| `/add-dir <path>` | Add a directory to the workspace |
+| `/export` | Export current context and upload it as a Discord file attachment |
+| `/init` | Generate `AGENTS.md` via Kimi |
+| `/test <type>` | Send a test request (`approval`, `toolcall`, `question`, `multiselect`) |
 
 ## Environment variables
 

@@ -34,7 +34,8 @@ export interface WireResponse {
   id: string;
   result: {
     request_id: string;
-    response: string;
+    response?: string;
+    answers?: Record<string, string>;
   };
 }
 
@@ -67,7 +68,7 @@ export interface WireRequestMessage {
   method: "request";
   id: string;
   params: {
-    type: "ApprovalRequest" | "QuestionRequest" | "ToolCallRequest";
+    type: "ApprovalRequest" | "QuestionRequest" | "ToolCallRequest" | "HookRequest";
     payload: unknown;
   };
 }
@@ -144,9 +145,22 @@ export interface ApprovalRequestPayload {
   command?: unknown;
 }
 
-export interface QuestionRequestPayload {
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionItem {
   question: string;
-  suggestions?: string[];
+  header?: string;
+  options: QuestionOption[];
+  multi_select?: boolean;
+}
+
+export interface QuestionRequestPayload {
+  id: string;
+  tool_call_id: string;
+  questions: QuestionItem[];
 }
 
 export function isWireEvent(msg: WireInbound): msg is WireEventMessage {

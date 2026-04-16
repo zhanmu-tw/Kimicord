@@ -17,6 +17,7 @@ import * as channelMode from "./modes/channel.js";
 import * as forumMode from "./modes/forum.js";
 import { deleteSessionByThread, getSessionByThread, listAllSessions } from "./db.js";
 
+
 const rest = new REST({ version: "10" }).setToken(CONFIG.discordToken);
 
 export async function registerCommands() {
@@ -28,6 +29,7 @@ export async function registerCommands() {
         opt.setName("prompt").setDescription("Optional starting prompt").setRequired(false)
       )
       .toJSON(),
+    new SlashCommandBuilder().setName("interrupt").setDescription("Interrupt the current turn without killing the session").toJSON(),
     new SlashCommandBuilder().setName("stop").setDescription("Cancel the current turn and kill the session").toJSON(),
     new SlashCommandBuilder().setName("status").setDescription("Show session info").toJSON(),
     new SlashCommandBuilder()
@@ -55,14 +57,42 @@ export async function registerCommands() {
       .setDescription("Add a directory to the kimi workspace")
       .addStringOption((opt) => opt.setName("path").setDescription("Directory path").setRequired(true))
       .toJSON(),
-    new SlashCommandBuilder().setName("export").setDescription("Export current kimi context to a markdown file").toJSON(),
+    new SlashCommandBuilder().setName("export").setDescription("Export current kimi context and upload it as a file").toJSON(),
     new SlashCommandBuilder().setName("init").setDescription("Generate AGENTS.md via kimi").toJSON(),
+    new SlashCommandBuilder()
+      .setName("test")
+      .setDescription("Send a test request to the current session")
+      .addStringOption((opt) =>
+        opt
+          .setName("type")
+          .setDescription("Type of test request")
+          .setRequired(true)
+          .addChoices(
+            { name: "ApprovalRequest", value: "approval" },
+            { name: "ToolCallRequest", value: "toolcall" },
+            { name: "QuestionRequest (single)", value: "question" },
+            { name: "QuestionRequest (multi)", value: "multiselect" }
+          )
+      )
+      .toJSON(),
   ];
 
   const route = CONFIG.guildId
     ? Routes.applicationGuildCommands(CONFIG.discordAppId, CONFIG.guildId)
     : Routes.applicationCommands(CONFIG.discordAppId);
   await rest.put(route, { body: commands });
+
+  // Clear global commands when using guild commands to prevent duplicates
+  // after switching from global registration
+  if (CONFIG.guildId) {
+    try {
+      await rest.put(Routes.applicationCommands(CONFIG.discordAppId), { body: [] });
+      console.log("Cleared global slash commands");
+    } catch (e) {
+      console.log("Failed to clear global slash commands:", e);
+    }
+  }
+
   console.log(CONFIG.guildId ? "Guild slash commands registered" : "Slash commands registered");
 }
 
@@ -103,48 +133,100 @@ export function attachBotHandlers(client: Client) {
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
-    if (!interaction.isButton()) return;
-    const customId = interaction.customId;
-    const parts = customId.split(":");
-    if (parts.length !== 4) return;
-    const [type, wireRequestId, threadId, value] = parts;
+    if (interaction.isButton()) {
+      const customId = interaction.customId;
+      const parts = customId.split(":");
+      if (parts.length < 4) return;
+      const [type, wireRequestId, threadId, ...rest] = parts;
 
-    const session = SessionManager.get(threadId);
-    if (!session) {
-      await interaction.update({ content: "Session not found.", components: [] }).catch(() => {});
+      const session = SessionManager.get(threadId);
+      if (!session) {
+        await interaction.update({ content: "Session not found.", components: [] }).catch(() => {});
+        return;
+      }
+
+      if (type === "approve") {
+        const value = rest[0];
+        session.resolveRequest(wireRequestId, value);
+        await interaction.update({ content: `Selected: ${value}`, components: [] }).catch(() => {});
+        return;
+      }
+
+      if (type === "answer") {
+        const idx = Number(rest.pop());
+        const qKey = rest.join(":");
+        const { questionOptions, questionAnswers, questionTexts, questionRequestIds } = await import("./approvals.js");
+        const optionsMap = questionOptions.get(wireRequestId);
+        const labels = optionsMap?.get(qKey) ?? [];
+        const answerValue = labels[idx] ?? "";
+
+        const answersMap = questionAnswers.get(wireRequestId);
+        const texts = questionTexts.get(wireRequestId);
+        const requestId = questionRequestIds.get(wireRequestId) ?? wireRequestId;
+        if (answersMap) {
+          answersMap.set(qKey, answerValue);
+          const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
+          if (allAnswered) {
+            const record: Record<string, string> = {};
+            for (const [k, v] of answersMap) {
+              const text = texts?.[Number(k.slice(1))] ?? k;
+              record[text] = v;
+            }
+            session.resolveQuestionRequest(wireRequestId, requestId, record);
+            questionAnswers.delete(wireRequestId);
+            questionOptions.delete(wireRequestId);
+            questionTexts.delete(wireRequestId);
+            questionRequestIds.delete(wireRequestId);
+          }
+        }
+
+        await interaction.update({ content: `Selected: ${answerValue}`, components: [] }).catch(() => {});
+        return;
+      }
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      const customId = interaction.customId;
+      const parts = customId.split(":");
+      if (parts.length < 4) return;
+      const [type, wireRequestId, threadId, ...rest] = parts;
+      if (type !== "multiselect") return;
+
+      const session = SessionManager.get(threadId);
+      if (!session) {
+        await interaction.update({ content: "Session not found.", components: [] }).catch(() => {});
+        return;
+      }
+
+      const qKey = rest.join(":");
+      const selected = interaction.values; // string[]
+      const answerValue = selected.join(", ");
+
+      const { questionAnswers, questionOptions, questionTexts, questionRequestIds } = await import("./approvals.js");
+      const answersMap = questionAnswers.get(wireRequestId);
+      const texts = questionTexts.get(wireRequestId);
+      const requestId = questionRequestIds.get(wireRequestId) ?? wireRequestId;
+      if (answersMap) {
+        answersMap.set(qKey, answerValue);
+        const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
+        if (allAnswered) {
+          const record: Record<string, string> = {};
+          for (const [k, v] of answersMap) {
+            const text = texts?.[Number(k.slice(1))] ?? k;
+            record[text] = v;
+          }
+          session.resolveQuestionRequest(wireRequestId, requestId, record);
+          questionAnswers.delete(wireRequestId);
+          questionOptions.delete(wireRequestId);
+          questionTexts.delete(wireRequestId);
+          questionRequestIds.delete(wireRequestId);
+        }
+      }
+
+      await interaction.update({ content: `Selected: ${answerValue}`, components: [] }).catch(() => {});
       return;
     }
 
-    let response = value;
-    if (type === "answer") {
-      const { questionSuggestions } = await import("./approvals.js");
-      const suggestions = questionSuggestions.get(wireRequestId);
-      const idx = Number(value);
-      if (suggestions && !Number.isNaN(idx) && suggestions[idx]) {
-        response = suggestions[idx];
-      }
-      questionSuggestions.delete(wireRequestId);
-    }
-
-    session.resolveRequest(wireRequestId, response);
-    await interaction.update({ content: `Selected: ${response}`, components: [] }).catch(() => {});
-  });
-
-  client.on(Events.ThreadDelete, async (thread: ThreadChannel) => {
-    if (SessionManager.get(thread.id)) {
-      SessionManager.destroy(thread.id);
-      deleteSessionByThread(thread.id);
-    }
-  });
-
-  client.on(Events.ThreadUpdate, async (_oldThread, newThread: ThreadChannel) => {
-    if (newThread.archived && SessionManager.get(newThread.id)) {
-      SessionManager.destroy(newThread.id);
-      deleteSessionByThread(newThread.id);
-    }
-  });
-
-  client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, channel, user } = interaction;
 
@@ -154,9 +236,8 @@ export function attachBotHandlers(client: Client) {
         return;
       }
       const thread = channel as ThreadChannel;
-      const existing = SessionManager.get(thread.id);
-      if (existing) {
-        existing.destroy();
+      if (SessionManager.get(thread.id)) {
+        SessionManager.destroy(thread.id);
         deleteSessionByThread(thread.id);
       }
       const prompt = interaction.options.getString("prompt") ?? "";
@@ -194,6 +275,26 @@ export function attachBotHandlers(client: Client) {
       return;
     }
 
+    if (commandName === "interrupt") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No active session here.", ephemeral: true });
+        return;
+      }
+      if (session.state !== "busy") {
+        await interaction.reply({ content: "Session is not currently busy.", ephemeral: true });
+        return;
+      }
+      await session.cancel();
+      await interaction.reply("⏹️ Turn interrupted.");
+      return;
+    }
+
     if (commandName === "stop") {
       if (!channel || !(channel instanceof ThreadChannel)) {
         await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
@@ -206,7 +307,8 @@ export function attachBotHandlers(client: Client) {
         return;
       }
       await session.cancel();
-      session.teardown();
+      SessionManager.destroy(thread.id);
+      deleteSessionByThread(thread.id);
       await interaction.reply("🛑 Session stopped.");
       return;
     }
@@ -268,7 +370,100 @@ export function attachBotHandlers(client: Client) {
       return;
     }
 
-    const proxyCommands = ["compact", "clear", "yolo", "plan", "add-dir", "export", "init"];
+    if (commandName === "export") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        return;
+      }
+      await interaction.reply({ content: "➡️ Exporting context…", ephemeral: true });
+      const { runTurn } = await import("./turn.js");
+      const renderer = await runTurn(session, thread, "/export");
+      const mdPath = renderer.lastExportPath;
+      if (mdPath) {
+        try {
+          await thread.send({ content: "📄 Export complete:", files: [mdPath] });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await thread.send({ content: `✅ Export completed, but I couldn't attach the file: ${msg}` });
+        }
+      } else {
+        await thread.send({ content: "✅ Export completed, but I couldn't find the file path in Kimi's response." });
+      }
+      return;
+    }
+
+    if (commandName === "test") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        return;
+      }
+      const testType = interaction.options.getString("type", true);
+      const wireRequestId = `test-${Date.now()}`;
+      const { postApproval, postToolCallRequest, postQuestion } = await import("./approvals.js");
+
+      if (testType === "approval") {
+        await postApproval(thread, session, wireRequestId, {
+          action: "TestAction",
+          description: "This is a test ApprovalRequest.",
+        });
+      } else if (testType === "toolcall") {
+        await postToolCallRequest(thread, session, wireRequestId, {
+          action: "TestToolCall",
+          description: "This is a test ToolCallRequest.",
+        });
+      } else if (testType === "question") {
+        await postQuestion(thread, session, wireRequestId, {
+          id: wireRequestId,
+          tool_call_id: "test-tool-call",
+          questions: [
+            {
+              question: "Which color do you prefer?",
+              header: "Color",
+              options: [
+                { label: "Red", description: "Warm and bold" },
+                { label: "Blue", description: "Cool and calm" },
+                { label: "Green", description: "Natural and fresh" },
+              ],
+              multi_select: false,
+            },
+          ],
+        });
+      } else if (testType === "multiselect") {
+        await postQuestion(thread, session, wireRequestId, {
+          id: wireRequestId,
+          tool_call_id: "test-tool-call",
+          questions: [
+            {
+              question: "Which features do you want?",
+              header: "Features",
+              options: [
+                { label: "Dark mode", description: "Easy on the eyes" },
+                { label: "Notifications", description: "Stay in the loop" },
+                { label: "Auto-save", description: "Never lose work" },
+              ],
+              multi_select: true,
+            },
+          ],
+        });
+      }
+
+      await interaction.reply({ content: `🧪 Test ${testType} sent.`, ephemeral: true });
+      return;
+    }
+
+    const proxyCommands = ["compact", "clear", "yolo", "plan", "add-dir", "init"];
     if (proxyCommands.includes(commandName)) {
       if (!channel || !(channel instanceof ThreadChannel)) {
         await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
@@ -301,9 +496,24 @@ export function attachBotHandlers(client: Client) {
       return;
     }
   });
+
+  client.on(Events.ThreadDelete, async (thread: ThreadChannel) => {
+    if (SessionManager.get(thread.id)) {
+      SessionManager.destroy(thread.id);
+      deleteSessionByThread(thread.id);
+    }
+  });
+
+  client.on(Events.ThreadUpdate, async (_oldThread, newThread: ThreadChannel) => {
+    if (newThread.archived && SessionManager.get(newThread.id)) {
+      SessionManager.destroy(newThread.id);
+      deleteSessionByThread(newThread.id);
+    }
+  });
 }
 
 function buildErrorEmbed(err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   return new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626);
 }
+
