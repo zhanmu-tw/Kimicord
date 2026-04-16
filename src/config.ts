@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "node:path";
 
 export type TriggerMode = "mention" | "any";
 
@@ -60,7 +61,25 @@ export const CONFIG = {
   showThinking: (process.env.SHOW_THINKING ?? "true").toLowerCase() === "true",
   showStatusEmbed: (process.env.SHOW_STATUS_EMBED ?? "true").toLowerCase() === "true",
   guildId: process.env.GUILD_ID,
+  mcpConfigPath: process.env.MCP_CONFIG_PATH || "/app/data/mcp.json",
+  dashboardApiKey: process.env.DASHBOARD_API_KEY,
 };
+
+export function sanitizeWorkDir(input: string): string {
+  if (input.includes("\0")) {
+    throw new Error("Path contains null bytes");
+  }
+  if (/[;|&$`\n\r]/.test(input)) {
+    throw new Error("Path contains invalid shell characters");
+  }
+  const resolved = path.resolve(CONFIG.kimiWorkDir, input);
+  const base = path.resolve(CONFIG.kimiWorkDir);
+  const relative = path.relative(base, resolved);
+  if (relative.startsWith("..") || relative === "..") {
+    throw new Error("Path traversal detected");
+  }
+  return resolved;
+}
 
 if (!CONFIG.discordToken || !CONFIG.discordAppId) {
   console.error("Missing DISCORD_TOKEN or DISCORD_APP_ID");
