@@ -45,6 +45,11 @@ export class KimiSession extends EventEmitter {
   private initWaiters: Array<() => void> = [];
   pendingQuestion: { wireRequestId: string } | null = null;
 
+  questionAnswers = new Map<string, Map<string, string>>();
+  questionOptions = new Map<string, Map<string, string[]>>();
+  questionTexts = new Map<string, string[]>();
+  questionRequestIds = new Map<string, string>();
+
   constructor(opts: {
     threadId: string;
     sessionId: string;
@@ -83,8 +88,8 @@ export class KimiSession extends EventEmitter {
       mkdirSync(this.workDir, { recursive: true });
       const args = ["--wire", "--session", this.sessionId, "-w", this.workDir];
       if (this.yolo) args.push("--yolo");
-      if (existsSync("/app/data/mcp.json")) {
-        args.push("--mcp-config-file", "/app/data/mcp.json");
+      if (CONFIG.mcpConfigPath && existsSync(CONFIG.mcpConfigPath)) {
+        args.push("--mcp-config-file", CONFIG.mcpConfigPath);
       }
       this.log("Spawning kimi", args.join(" "));
       this.proc = spawn("kimi", args, {
@@ -373,6 +378,20 @@ export class KimiSession extends EventEmitter {
     return true;
   }
 
+  clearQuestionState(wireRequestId?: string): void {
+    if (wireRequestId) {
+      this.questionAnswers.delete(wireRequestId);
+      this.questionOptions.delete(wireRequestId);
+      this.questionTexts.delete(wireRequestId);
+      this.questionRequestIds.delete(wireRequestId);
+    } else {
+      this.questionAnswers.clear();
+      this.questionOptions.clear();
+      this.questionTexts.clear();
+      this.questionRequestIds.clear();
+    }
+  }
+
   teardown(): void {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
@@ -384,6 +403,7 @@ export class KimiSession extends EventEmitter {
     }
     this.pendingRequests.clear();
     this.pendingQuestion = null;
+    this.clearQuestionState();
     this.messageQueue = [];
     if (this.proc && !this.proc.killed) {
       this.proc.kill("SIGTERM");
