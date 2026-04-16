@@ -30,7 +30,10 @@ export class TurnRenderer {
   private discordMessage: Message | null = null;
   private extraMessages: Message[] = [];
   private toolMessages = new Map<string, Message>();
-  private pendingToolCalls = new Map<string, { name: string; args: string; posted: boolean }>();
+  private pendingToolCalls = new Map<
+    string,
+    { name: string; args: string; posted: boolean }
+  >();
   private lastToolCallId: string | null = null;
   private statusMessage: Message | null = null;
   private stepCount = 0;
@@ -44,7 +47,7 @@ export class TurnRenderer {
     private mode: string,
     private trigger: string,
     private workDir: string,
-    private yolo: boolean
+    private yolo: boolean,
   ) {}
 
   async init(): Promise<void> {
@@ -57,10 +60,14 @@ export class TurnRenderer {
   handleEvent(event: WireEventMessage) {
     switch (event.params.type) {
       case "ContentPart": {
-        const p = event.params.payload as ContentPartTextPayload | ContentPartThinkPayload;
+        const p = event.params.payload as
+          | ContentPartTextPayload
+          | ContentPartThinkPayload;
         if (p.type === "text") {
           const textPart = (p as ContentPartTextPayload).text;
-          const exportMatch = textPart.match(/exported\s+\d+\s+messages?\s+to\s+(\S+\.md)/i);
+          const exportMatch = textPart.match(
+            /exported\s+\d+\s+messages?\s+to\s+(\S+\.md)/i,
+          );
           if (exportMatch) {
             this.lastExportPath = exportMatch[1];
           }
@@ -73,7 +80,11 @@ export class TurnRenderer {
       }
       case "ToolCall": {
         const p = event.params.payload as ToolCallPayload;
-        this.pendingToolCalls.set(p.id, { name: p.function.name, args: p.function.arguments ?? "", posted: false });
+        this.pendingToolCalls.set(p.id, {
+          name: p.function.name,
+          args: p.function.arguments ?? "",
+          posted: false,
+        });
         this.lastToolCallId = p.id;
         const initialArgs = p.function.arguments ?? "";
         if (initialArgs.trim().endsWith("}")) {
@@ -165,7 +176,10 @@ export class TurnRenderer {
         .trimStart();
       // Strip export confirmation text; the /export command uploads the file directly
       this.textBuffer = this.textBuffer
-        .replace(/Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi, "")
+        .replace(
+          /Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi,
+          "",
+        )
         .trimStart();
       this.textBuffer = this.textBuffer.replace(/\n{2,}/g, "\n").trimStart();
       if (!this.textBuffer) return;
@@ -192,7 +206,7 @@ export class TurnRenderer {
           }
         }
         this.discordMessage = await this.channel.send({
-          content: "📄 Response too long — sent as file:",
+          content: "📄 Response is long, here's the file:",
           files: [filePath],
         });
         this.extraMessages = [];
@@ -315,7 +329,11 @@ export class TurnRenderer {
     } else {
       const head = lines.slice(0, 3).join("\n");
       const more = lines.length - 3;
-      resultText = "\`\`\`\n" + head + (more > 0 ? `\n▾ ${more} more lines` : "") + "\n\`\`\`";
+      resultText =
+        "\`\`\`\n" +
+        head +
+        (more > 0 ? `\n▾ ${more} more lines` : "") +
+        "\n\`\`\`";
       if (resultText.length > 900) {
         resultText = resultText.slice(0, 900) + "…";
       }
@@ -333,18 +351,32 @@ export class TurnRenderer {
         { name: "Working dir", value: this.workDir, inline: false },
         { name: "YOLO", value: String(this.yolo), inline: true },
         { name: "Step", value: String(this.stepCount), inline: true },
-        { name: "Context", value: `${(this.contextUsage * 100).toFixed(1)}%`, inline: true },
-        { name: "Status", value: status, inline: false }
+        {
+          name: "Context",
+          value: `${(this.contextUsage * 100).toFixed(1)}%`,
+          inline: true,
+        },
+        { name: "Status", value: status, inline: false },
       )
-      .setColor(status.includes("Working") ? 0xf59e0b : status.includes("Ready") ? 0x22c55e : 0x6b7280);
+      .setColor(
+        status.includes("Working")
+          ? 0xf59e0b
+          : status.includes("Ready")
+            ? 0x22c55e
+            : 0x6b7280,
+      );
   }
 
   async updateStatus(status: string) {
     if (!CONFIG.showStatusEmbed) return;
     if (!this.statusMessage) {
-      this.statusMessage = await this.channel.send({ embeds: [this.buildStatusEmbed(status)] });
+      this.statusMessage = await this.channel.send({
+        embeds: [this.buildStatusEmbed(status)],
+      });
     } else {
-      await this.statusMessage.edit({ embeds: [this.buildStatusEmbed(status)] });
+      await this.statusMessage.edit({
+        embeds: [this.buildStatusEmbed(status)],
+      });
     }
   }
 }

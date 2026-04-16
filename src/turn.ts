@@ -1,11 +1,11 @@
-import { ThreadChannel, EmbedBuilder } from "discord.js";
+import { ThreadChannel, EmbedBuilder, Message } from "discord.js";
 import { KimiSession } from "./session.js";
 import { TurnRenderer } from "./renderer.js";
 import { postApproval, postQuestion, postToolCallRequest } from "./approvals.js";
 import { getSessionByThread } from "./db.js";
 import { WireEventMessage, QuestionRequestPayload } from "./wire.js";
 
-export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string): Promise<TurnRenderer> {
+export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string, triggerMessage?: Message): Promise<TurnRenderer> {
   const row = getSessionByThread(thread.id);
   const renderer = new TurnRenderer(
     thread,
@@ -62,11 +62,18 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
     session.off("dormant", onDormant);
   };
 
+  if (triggerMessage) {
+    await triggerMessage.react("👀").catch(() => {});
+  }
+
+  const typingInterval = setInterval(() => {
+    thread.sendTyping().catch(() => {});
+  }, 8000);
+
   await thread.sendTyping();
   try {
     await session.sendPrompt(text);
   } catch (err) {
-    cleanup();
     const code = (err as Error & { code?: number }).code;
     const msg = err instanceof Error ? err.message : String(err);
     if (code === -32001 || msg.toLowerCase().includes("llm is not set")) {
@@ -86,9 +93,12 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
         embeds: [new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626)],
       });
     }
+  } finally {
+    clearInterval(typingInterval);
     cleanup();
-    return renderer;
+    if (triggerMessage) {
+      triggerMessage.reactions.cache.get("👀")?.users.remove(triggerMessage.client.user!.id).catch(() => {});
+    }
   }
-  cleanup();
   return renderer;
 }

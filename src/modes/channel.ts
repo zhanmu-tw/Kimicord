@@ -34,7 +34,7 @@ export async function handleTrigger(message: Message, config: ChannelConfig) {
   const session = SessionManager.getOrCreate(thread.id, sessionId, CONFIG.kimiWorkDir, CONFIG.kimiYolo);
   ensureDequeueHandler(session, thread);
 
-  runTurn(session, thread, promptText).catch(async (e) => {
+  runTurn(session, thread, promptText, message).catch(async (e) => {
     console.error(e);
     await thread.send({ embeds: [buildErrorEmbed(e)] });
   });
@@ -60,7 +60,7 @@ export async function handleThreadReply(message: Message) {
     session.messageQueue.push({ text: message.content, context: message });
     await message.react("⏳");
   } else {
-    runTurn(session, thread, message.content).catch(async (e) => {
+    runTurn(session, thread, message.content, message).catch(async (e) => {
       console.error(e);
       await thread.send({ embeds: [buildErrorEmbed(e)] });
     });
@@ -74,7 +74,7 @@ function ensureDequeueHandler(session: ReturnType<typeof SessionManager.getOrCre
     if (msg) {
       msg.reactions.cache.get("⏳")?.users.remove(msg.client.user!.id).catch(() => {});
     }
-    runTurn(session, thread, item.text).catch(async (e) => {
+    runTurn(session, thread, item.text, msg).catch(async (e) => {
       console.error(e);
       await thread.send({ embeds: [buildErrorEmbed(e)] });
     });
