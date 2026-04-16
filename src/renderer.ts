@@ -17,6 +17,8 @@ import {
   TurnEndPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
+import { writeFileSync } from "node:fs";
+import { join as pathJoin } from "node:path";
 
 type SendableChannel = ThreadChannel | TextChannel | NewsChannel | ForumChannel;
 
@@ -26,6 +28,7 @@ export class TurnRenderer {
   private lastEditAt = 0;
   private editTimer: NodeJS.Timeout | null = null;
   private discordMessage: Message | null = null;
+  private extraMessages: Message[] = [];
   private toolMessages = new Map<string, Message>();
   private pendingToolCalls = new Map<string, { name: string; args: string; posted: boolean }>();
   private lastToolCallId: string | null = null;
@@ -168,15 +171,58 @@ export class TurnRenderer {
       if (!this.textBuffer) return;
 
       const chunks = splitMarkdown(this.textBuffer, 1900);
+
+      // If the final response is huge, replace it with a file attachment
+      if (this.finished && chunks.length > 3) {
+        const fileName = `kimi-output-${Date.now()}.md`;
+        const filePath = pathJoin(this.workDir, fileName);
+        writeFileSync(filePath, this.textBuffer);
+        if (this.discordMessage) {
+          try {
+            await this.discordMessage.delete();
+          } catch {
+            // ignore
+          }
+        }
+        for (const extra of this.extraMessages) {
+          try {
+            await extra.delete();
+          } catch {
+            // ignore
+          }
+        }
+        this.discordMessage = await this.channel.send({
+          content: "📄 Response too long — sent as file:",
+          files: [filePath],
+        });
+        this.extraMessages = [];
+        this.textBuffer = "";
+        return;
+      }
+
       if (!this.discordMessage) {
         this.discordMessage = await this.channel.send(chunks[0]);
         for (let i = 1; i < chunks.length; i++) {
-          await this.channel.send(chunks[i]);
+          this.extraMessages.push(await this.channel.send(chunks[i]));
         }
       } else {
         await this.discordMessage.edit(chunks[0]);
-        // Note: we don't try to edit extra split messages; simplicity trade-off.
-        // For a v1 this is acceptable.
+        for (let i = 1; i < chunks.length; i++) {
+          if (this.extraMessages[i - 1]) {
+            await this.extraMessages[i - 1].edit(chunks[i]);
+          } else {
+            this.extraMessages.push(await this.channel.send(chunks[i]));
+          }
+        }
+        // Delete any excess overflow messages if text shrank
+        while (this.extraMessages.length > chunks.length - 1) {
+          const extra = this.extraMessages.pop();
+          try {
+            await extra?.delete();
+          } catch {
+            // ignore
+          }
+        }
       }
     });
     return this.flushQueue;
@@ -196,9 +242,9 @@ export class TurnRenderer {
     if (!buf || buf.posted) return;
     buf.posted = true;
 
-    // Skip raw tool call text for AskUserQuestion; the interactive UI from
-    // QuestionRequest already shows the question and options cleanly.
-    if (buf.name === "AskUserQuestion") return;
+    // Skip raw tool call text for tools that are better summarized by Kimi
+    // in its natural response, or handled via interactive UI.
+    if (buf.name === "AskUserQuestion" || buf.name === "ReadFile") return;
 
     let text = this.formatToolCallText(buf.name, buf.args.trim());
     const msg = await this.channel.send(text);
@@ -249,9 +295,9 @@ export class TurnRenderer {
 
     const buf = this.pendingToolCalls.get(id);
 
-    // Skip rendering the raw JSON result for AskUserQuestion; the interactive
-    // UI already handled the answer and we don't want to echo it back.
-    if (buf?.name === "AskUserQuestion") {
+    // Skip rendering raw tool results that are better left for Kimi to summarize
+    // in its natural ContentPart response, rather than dumping huge raw output.
+    if (buf?.name === "AskUserQuestion" || buf?.name === "ReadFile") {
       this.pendingToolCalls.delete(id);
       return;
     }
