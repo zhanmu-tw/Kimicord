@@ -199,10 +199,47 @@ export class TurnRenderer {
     // QuestionRequest already shows the question and options cleanly.
     if (buf.name === "AskUserQuestion") return;
 
-    const argsPreview = buf.args.trim() || "(no arguments)";
-    const text = `⚙️ **${buf.name}**: \`${argsPreview.replace(/`/g, "'").slice(0, 400)}\``;
+    let text = this.formatToolCallText(buf.name, buf.args.trim());
     const msg = await this.channel.send(text);
     this.toolMessages.set(toolCallId, msg);
+  }
+
+  private formatToolCallText(name: string, args: string): string {
+    if (!args) return `⚙️ **${name}**: (no arguments)`;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(args) as Record<string, unknown>;
+    } catch {
+      // fall back to raw preview
+    }
+
+    if (name === "Shell" && parsed?.command) {
+      return `⚙️ **Shell**\n\`\`\`bash\n${String(parsed.command).slice(0, 800)}\n\`\`\``;
+    }
+
+    if (name === "WriteFile" && parsed?.path) {
+      return `⚙️ **WriteFile**: \`${String(parsed.path)}\``;
+    }
+
+    if (name === "StrReplaceFile" && parsed?.path) {
+      return `⚙️ **StrReplaceFile**: \`${String(parsed.path)}\``;
+    }
+
+    if (name === "ReadFile" && parsed?.path) {
+      return `⚙️ **ReadFile**: \`${String(parsed.path)}\``;
+    }
+
+    if (name === "Glob" && parsed?.pattern) {
+      return `⚙️ **Glob**: \`${String(parsed.pattern)}\``;
+    }
+
+    // Generic fallback: code block for multi-line, inline for single-line
+    const preview = args.replace(/`/g, "'").slice(0, 400);
+    if (args.includes("\n")) {
+      return `⚙️ **${name}**\n\`\`\`json\n${preview}\n\`\`\``;
+    }
+    return `⚙️ **${name}**: \`${preview}\``;
   }
 
   private async updateToolResult(payload: ToolResultPayload) {
