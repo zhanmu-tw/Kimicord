@@ -1,5 +1,5 @@
 import http from "node:http";
-import { URL } from "node:url";
+import crypto from "node:crypto";
 import { SessionManager } from "./session.js";
 import { listAllSessions } from "./db.js";
 import { CONFIG } from "./config.js";
@@ -52,6 +52,9 @@ const html = `<!DOCTYPE html>
 <div class="stats" id="stats">Loading…</div>
 <div id="table-container"><p class="empty">Loading sessions…</p></div>
 <script>
+function esc(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 async function load() {
   try {
     const res = await fetch('/api/sessions');
@@ -76,14 +79,14 @@ async function load() {
       sessions.map(s => {
         const when = new Date(s.lastActive).toLocaleString();
         return \`<tr>
-          <td><span class="badge badge-\${s.state}">\${s.state}</span></td>
-          <td class="mono">\${s.sessionId.slice(0,8)}</td>
-          <td class="mono">\${s.threadId.slice(0,8)}…</td>
-          <td>\${s.mode}</td>
-          <td>\${s.trigger}</td>
-          <td class="mono">\${s.workDir}</td>
-          <td>\${when}</td>
-          <td>\${s.queueDepth}</td>
+          <td><span class="badge badge-\${esc(s.state)}">\${esc(s.state)}</span></td>
+          <td class="mono">\${esc(s.sessionId.slice(0,8))}</td>
+          <td class="mono">\${esc(s.threadId.slice(0,8))}…</td>
+          <td>\${esc(s.mode)}</td>
+          <td>\${esc(s.trigger)}</td>
+          <td class="mono">\${esc(s.workDir)}</td>
+          <td>\${esc(when)}</td>
+          <td>\${esc(s.queueDepth)}</td>
         </tr>\`;
       }).join('') +
       '</tbody></table>';
@@ -98,17 +101,29 @@ setInterval(load, 2000);
 </html>`;
 
 function isAuthorized(req: http.IncomingMessage): boolean {
-  if (!CONFIG.dashboardApiKey) return true;
+  if (!CONFIG.dashboardApiKey) return false;
   const auth = req.headers.authorization;
-  if (auth && auth.startsWith("Bearer ") && auth.slice(7) === CONFIG.dashboardApiKey) {
-    return true;
-  }
-  const url = req.url ? new URL(req.url, `http://${req.headers.host}`) : null;
-  if (url?.searchParams.get("key") === CONFIG.dashboardApiKey) {
-    return true;
+  if (auth && auth.startsWith("Bearer ")) {
+    const token = auth.slice(7);
+    try {
+      const a = Buffer.from(token);
+      const b = Buffer.from(CONFIG.dashboardApiKey);
+      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
   }
   return false;
 }
+
+const securityHeaders = {
+  "Content-Type": "text/html",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'",
+};
 
 export function startDashboard() {
   const server = http.createServer((req, res) => {
@@ -118,11 +133,16 @@ export function startDashboard() {
       return;
     }
     if (req.url === "/api/sessions" || req.url?.startsWith("/api/sessions?")) {
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'",
+      });
       res.end(JSON.stringify(getSessionsData()));
       return;
     }
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, securityHeaders);
     res.end(html);
   });
 
