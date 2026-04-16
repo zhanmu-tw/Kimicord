@@ -11,6 +11,7 @@ import {
   isWireEvent,
   isWireRequest,
   isWirePromptResult,
+  QuestionRequestPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
 import { updateLastActive } from "./db.js";
@@ -237,8 +238,10 @@ export class KimiSession extends EventEmitter {
       const wireRequestId = msg.id;
       const type = msg.params.type;
       if (type === "QuestionRequest") {
-        const p = msg.params.payload as { suggestions?: string[] };
-        if (!p.suggestions || p.suggestions.length === 0) {
+        const p = msg.params.payload as QuestionRequestPayload;
+        // Only set pendingQuestion if ALL questions have no options (open-ended)
+        const allOpenEnded = p.questions.every((q) => q.options.length === 0);
+        if (allOpenEnded) {
           this.pendingQuestion = { wireRequestId };
         }
       }
@@ -317,6 +320,24 @@ export class KimiSession extends EventEmitter {
     };
     this.write(msg);
     pending.resolve(response);
+  }
+
+  resolveQuestionRequest(wireRequestId: string, requestId: string, answers: Record<string, string>): void {
+    const pending = this.pendingRequests.get(wireRequestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    this.pendingRequests.delete(wireRequestId);
+    if (this.pendingQuestion?.wireRequestId === wireRequestId) {
+      this.pendingQuestion = null;
+    }
+
+    const msg: WireOutbound = {
+      jsonrpc: "2.0",
+      id: wireRequestId,
+      result: { request_id: requestId, answers },
+    };
+    this.write(msg);
+    pending.resolve(JSON.stringify(answers));
   }
 
   registerPendingRequest(

@@ -33,6 +33,7 @@ export class TurnRenderer {
   private stepCount = 0;
   private contextUsage = 0;
   private finished = false;
+  lastExportPath: string | null = null;
 
   constructor(
     private channel: ThreadChannel | TextChannel,
@@ -55,7 +56,12 @@ export class TurnRenderer {
       case "ContentPart": {
         const p = event.params.payload as ContentPartTextPayload | ContentPartThinkPayload;
         if (p.type === "text") {
-          this.textBuffer += (p as ContentPartTextPayload).text;
+          const textPart = (p as ContentPartTextPayload).text;
+          const exportMatch = textPart.match(/exported\s+\d+\s+messages?\s+to\s+(\S+\.md)/i);
+          if (exportMatch) {
+            this.lastExportPath = exportMatch[1];
+          }
+          this.textBuffer += textPart;
           this.scheduleEdit();
         } else if (p.type === "think" && CONFIG.showThinking) {
           this.thinkBuffer += (p as ContentPartThinkPayload).think;
@@ -124,36 +130,55 @@ export class TurnRenderer {
 
   private scheduleEdit() {
     if (this.finished) return;
+    if (this.editTimer) return;
     const now = Date.now();
-    if (now - this.lastEditAt >= 1000) {
+    // Debounce the first message creation for 300ms so tokens can accumulate,
+    // then throttle subsequent edits to once per second.
+    const delay = this.discordMessage
+      ? Math.max(0, 1000 - (now - this.lastEditAt))
+      : 300;
+    this.editTimer = setTimeout(() => {
+      this.editTimer = null;
       this.flushEdit().catch(console.error);
-    } else if (!this.editTimer) {
-      this.editTimer = setTimeout(() => {
-        this.editTimer = null;
-        this.flushEdit().catch(console.error);
-      }, 1000 - (now - this.lastEditAt));
-    }
+    }, delay);
   }
 
-  private async flushEdit() {
-    if (this.editTimer) {
-      clearTimeout(this.editTimer);
-      this.editTimer = null;
-    }
-    if (!this.textBuffer) return;
-    this.lastEditAt = Date.now();
+  private flushQueue: Promise<void> = Promise.resolve();
 
-    const chunks = splitMarkdown(this.textBuffer, 1900);
-    if (!this.discordMessage) {
-      this.discordMessage = await this.channel.send(chunks[0]);
-      for (let i = 1; i < chunks.length; i++) {
-        await this.channel.send(chunks[i]);
+  private flushEdit(): Promise<void> {
+    this.flushQueue = this.flushQueue.then(async () => {
+      if (this.editTimer) {
+        clearTimeout(this.editTimer);
+        this.editTimer = null;
       }
-    } else {
-      await this.discordMessage.edit(chunks[0]);
-      // Note: we don't try to edit extra split messages; simplicity trade-off.
-      // For a v1 this is acceptable.
-    }
+      if (!this.textBuffer) return;
+      this.lastEditAt = Date.now();
+
+      // Strip raw QuestionResponse JSON that Kimi echoes back after answers
+      this.textBuffer = this.textBuffer
+        .replace(/```(?:json)?\s*\n?\{\s*"answers"\s*:[\s\S]*?\}\s*\n?```/g, "")
+        .replace(/\{\s*"answers"\s*:\s*\{[\s\S]*?\}\s*\}\s*/g, "")
+        .trimStart();
+      // Strip export confirmation text; the /export command uploads the file directly
+      this.textBuffer = this.textBuffer
+        .replace(/Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi, "")
+        .trimStart();
+      this.textBuffer = this.textBuffer.replace(/\n{2,}/g, "\n").trimStart();
+      if (!this.textBuffer) return;
+
+      const chunks = splitMarkdown(this.textBuffer, 1900);
+      if (!this.discordMessage) {
+        this.discordMessage = await this.channel.send(chunks[0]);
+        for (let i = 1; i < chunks.length; i++) {
+          await this.channel.send(chunks[i]);
+        }
+      } else {
+        await this.discordMessage.edit(chunks[0]);
+        // Note: we don't try to edit extra split messages; simplicity trade-off.
+        // For a v1 this is acceptable.
+      }
+    });
+    return this.flushQueue;
   }
 
   private async postThinking() {
@@ -169,6 +194,11 @@ export class TurnRenderer {
     const buf = this.pendingToolCalls.get(toolCallId);
     if (!buf || buf.posted) return;
     buf.posted = true;
+
+    // Skip raw tool call text for AskUserQuestion; the interactive UI from
+    // QuestionRequest already shows the question and options cleanly.
+    if (buf.name === "AskUserQuestion") return;
+
     const argsPreview = buf.args.trim() || "(no arguments)";
     const text = `⚙️ **${buf.name}**: \`${argsPreview.replace(/`/g, "'").slice(0, 400)}\``;
     const msg = await this.channel.send(text);
@@ -179,9 +209,17 @@ export class TurnRenderer {
     const id = payload.tool_call_id ?? payload.id;
     if (!id) return;
 
+    const buf = this.pendingToolCalls.get(id);
+
+    // Skip rendering the raw JSON result for AskUserQuestion; the interactive
+    // UI already handled the answer and we don't want to echo it back.
+    if (buf?.name === "AskUserQuestion") {
+      this.pendingToolCalls.delete(id);
+      return;
+    }
+
     const output = payload.return_value?.output ?? payload.result ?? "";
 
-    const buf = this.pendingToolCalls.get(id);
     if (buf && !buf.posted) {
       await this.flushToolCall(id);
     }
