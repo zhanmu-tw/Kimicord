@@ -16,7 +16,7 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 - **Forum mode** — auto-reply to new forum posts
 - **Slash commands** — `/new`, `/interrupt`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, `/init`, `/test`
 - **Dashboard** — lightweight HTTP dashboard for live session stats
-- **MCP support** — auto-detects `/app/data/mcp.json` and passes it to `kimi`
+- **MCP support** — auto-detects `mcp.json` (configurable via `MCP_CONFIG_PATH`) and passes it to `kimi`
 
 ## Quick start
 
@@ -99,6 +99,13 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 ## Environment variables
 
 See `.env.example` for all available options and defaults.
+
+## Security considerations
+
+- **Arbitrary code execution:** Any Discord user listed in `ALLOWED_USER_IDS` can execute arbitrary shell commands on the host via Kimi's built-in tool system. Run Kimicord inside a container with minimal privileges and restrict volume mounts to only what is necessary.
+- **Path traversal:** `/workdir` and `/add-dir` are sanitized so they cannot escape `KIMI_WORK_DIR`. Keep your volume mounts tight to minimize blast radius.
+- **Dashboard exposure:** The HTTP dashboard exposes live session metadata. Set `DASHBOARD_API_KEY` if the dashboard port is reachable from untrusted networks.
+- **Secret management:** Do not commit `.env` to version control. In production, prefer Docker secrets, a vault, or your orchestrator's secret injection. Rotate Discord tokens regularly.
 
 ## License
 
