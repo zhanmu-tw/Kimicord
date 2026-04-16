@@ -52,8 +52,8 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
 
   session.on("event", onEvent);
   session.on("request", onRequest);
-  session.on("crashed", onCrashed);
-  session.on("dormant", onDormant);
+  session.once("crashed", onCrashed);
+  session.once("dormant", onDormant);
 
   const cleanup = () => {
     session.off("event", onEvent);
@@ -62,16 +62,16 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
     session.off("dormant", onDormant);
   };
 
-  if (triggerMessage) {
-    await triggerMessage.react("👀").catch(() => {});
-  }
-
   const typingInterval = setInterval(() => {
     thread.sendTyping().catch(() => {});
   }, 8000);
 
-  await thread.sendTyping();
   try {
+    if (triggerMessage) {
+      await triggerMessage.react("👀").catch(() => {});
+    }
+
+    await thread.sendTyping();
     await session.sendPrompt(text);
   } catch (err) {
     const code = (err as Error & { code?: number }).code;
