@@ -16,6 +16,7 @@ import { SessionManager } from "./session.js";
 import * as channelMode from "./modes/channel.js";
 import * as forumMode from "./modes/forum.js";
 import { deleteSessionByThread, getSessionByThread, listAllSessions } from "./db.js";
+import { buildErrorEmbed } from "./errors.js";
 
 
 const rest = new REST({ version: "10" }).setToken(CONFIG.discordToken);
@@ -134,6 +135,10 @@ export function attachBotHandlers(client: Client) {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (interaction.isButton()) {
+      if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        return;
+      }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
@@ -182,6 +187,10 @@ export function attachBotHandlers(client: Client) {
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        return;
+      }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
@@ -220,6 +229,10 @@ export function attachBotHandlers(client: Client) {
     }
 
     if (!interaction.isChatInputCommand()) return;
+    if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+      await interaction.reply({ content: "You are not authorized to use this bot.", ephemeral: true });
+      return;
+    }
     const { commandName, channel, user } = interaction;
 
     if (commandName === "new") {
@@ -516,8 +529,5 @@ export function attachBotHandlers(client: Client) {
   });
 }
 
-function buildErrorEmbed(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  return new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626);
-}
+
 

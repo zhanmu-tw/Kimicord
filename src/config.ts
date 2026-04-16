@@ -65,6 +65,10 @@ export const CONFIG = {
   dashboardApiKey: process.env.DASHBOARD_API_KEY,
 };
 
+if (CONFIG.allowedUserIds.size === 0) {
+  console.warn("WARNING: ALLOWED_USER_IDS is empty. No users will be authorized to interact with the bot.");
+}
+
 export function sanitizeWorkDir(input: string): string {
   if (input.includes("\0")) {
     throw new Error("Path contains null bytes");
