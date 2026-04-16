@@ -4,6 +4,7 @@ import { TurnRenderer } from "./renderer.js";
 import { postApproval, postQuestion, postToolCallRequest } from "./approvals.js";
 import { getSessionByThread } from "./db.js";
 import { WireEventMessage, QuestionRequestPayload } from "./wire.js";
+import { safeErrorReply } from "./errors.js";
 
 export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string, triggerMessage?: Message): Promise<TurnRenderer> {
   const row = getSessionByThread(thread.id);
@@ -90,7 +91,7 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
       });
     } else {
       await thread.send({
-        embeds: [new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626)],
+        embeds: [new EmbedBuilder().setTitle("❌ Session Error").setDescription(safeErrorReply(err)).setColor(0xdc2626)],
       });
     }
   } finally {

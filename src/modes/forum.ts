@@ -1,9 +1,10 @@
-import { Message, ThreadChannel, EmbedBuilder } from "discord.js";
+import { Message, ThreadChannel } from "discord.js";
 import { ChannelConfig, CONFIG } from "../config.js";
 import { SessionManager } from "../session.js";
 import { insertSession } from "../db.js";
 import { randomUUID } from "node:crypto";
 import { runTurn } from "../turn.js";
+import { buildErrorEmbed } from "../errors.js";
 
 export async function handleNewPost(thread: ThreadChannel, config: ChannelConfig) {
   const msg = await thread.fetchStarterMessage().catch(() => null);
@@ -88,7 +89,4 @@ function stripMentions(content: string, botId?: string): string {
   return content.replace(regex, "").trim();
 }
 
-function buildErrorEmbed(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  return new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626);
-}
+
