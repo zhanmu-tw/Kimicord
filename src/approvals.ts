@@ -20,18 +20,6 @@ type SendableThread = ThreadChannel | TextChannel;
 
 export const questionSuggestions = new Map<string, string[]>();
 
-// wireRequestId -> questionText -> selected answer string
-export const questionAnswers = new Map<string, Map<string, string>>();
-
-// wireRequestId -> questionText -> option labels array
-export const questionOptions = new Map<string, Map<string, string[]>>();
-
-// wireRequestId -> [questionText0, questionText1, ...]
-export const questionTexts = new Map<string, string[]>();
-
-// wireRequestId -> QuestionRequest payload id (may differ from wireRequestId)
-export const questionRequestIds = new Map<string, string>();
-
 export async function postApproval(
   channel: SendableThread,
   session: KimiSession,
@@ -96,16 +84,13 @@ export async function postQuestion(
     messages.push(msg);
   }
 
-  questionAnswers.set(wireRequestId, answers);
-  questionOptions.set(wireRequestId, options);
-  questionTexts.set(wireRequestId, texts);
-  questionRequestIds.set(wireRequestId, payload.id);
+  session.questionAnswers.set(wireRequestId, answers);
+  session.questionOptions.set(wireRequestId, options);
+  session.questionTexts.set(wireRequestId, texts);
+  session.questionRequestIds.set(wireRequestId, payload.id);
 
   session.registerPendingRequest(wireRequestId, "QuestionRequest", 300000).then((res) => {
-    questionAnswers.delete(wireRequestId);
-    questionOptions.delete(wireRequestId);
-    questionTexts.delete(wireRequestId);
-    questionRequestIds.delete(wireRequestId);
+    session.clearQuestionState(wireRequestId);
     if (res === "__timeout__") {
       const emptyAnswers: Record<string, string> = {};
       session.resolveQuestionRequest(wireRequestId, payload.id, emptyAnswers);
