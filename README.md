@@ -29,7 +29,7 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    ```yaml
    services:
      kimicord:
-       image: ghcr.io/zhanmu-tw/kimicord:1.0.0
+       image: ghcr.io/zhanmu-tw/kimicord:latest
        environment:
          DISCORD_TOKEN: ${DISCORD_TOKEN}
          DISCORD_APP_ID: ${DISCORD_APP_ID}
