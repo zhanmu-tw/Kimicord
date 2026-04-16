@@ -11,11 +11,12 @@ import {
   PermissionFlagsBits,
   ChannelType,
 } from "discord.js";
-import { CONFIG } from "./config.js";
+import { CONFIG, sanitizeWorkDir } from "./config.js";
 import { SessionManager } from "./session.js";
 import * as channelMode from "./modes/channel.js";
 import * as forumMode from "./modes/forum.js";
 import { deleteSessionByThread, getSessionByThread, listAllSessions } from "./db.js";
+import { buildErrorEmbed } from "./errors.js";
 
 
 const rest = new REST({ version: "10" }).setToken(CONFIG.discordToken);
@@ -134,6 +135,10 @@ export function attachBotHandlers(client: Client) {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (interaction.isButton()) {
+      if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        return;
+      }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
@@ -155,14 +160,13 @@ export function attachBotHandlers(client: Client) {
       if (type === "answer") {
         const idx = Number(rest.pop());
         const qKey = rest.join(":");
-        const { questionOptions, questionAnswers, questionTexts, questionRequestIds } = await import("./approvals.js");
-        const optionsMap = questionOptions.get(wireRequestId);
+        const optionsMap = session.questionOptions.get(wireRequestId);
         const labels = optionsMap?.get(qKey) ?? [];
         const answerValue = labels[idx] ?? "";
 
-        const answersMap = questionAnswers.get(wireRequestId);
-        const texts = questionTexts.get(wireRequestId);
-        const requestId = questionRequestIds.get(wireRequestId) ?? wireRequestId;
+        const answersMap = session.questionAnswers.get(wireRequestId);
+        const texts = session.questionTexts.get(wireRequestId);
+        const requestId = session.questionRequestIds.get(wireRequestId) ?? wireRequestId;
         if (answersMap) {
           answersMap.set(qKey, answerValue);
           const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
@@ -173,10 +177,7 @@ export function attachBotHandlers(client: Client) {
               record[text] = v;
             }
             session.resolveQuestionRequest(wireRequestId, requestId, record);
-            questionAnswers.delete(wireRequestId);
-            questionOptions.delete(wireRequestId);
-            questionTexts.delete(wireRequestId);
-            questionRequestIds.delete(wireRequestId);
+            session.clearQuestionState(wireRequestId);
           }
         }
 
@@ -186,6 +187,10 @@ export function attachBotHandlers(client: Client) {
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        return;
+      }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
@@ -202,10 +207,9 @@ export function attachBotHandlers(client: Client) {
       const selected = interaction.values; // string[]
       const answerValue = selected.join(", ");
 
-      const { questionAnswers, questionOptions, questionTexts, questionRequestIds } = await import("./approvals.js");
-      const answersMap = questionAnswers.get(wireRequestId);
-      const texts = questionTexts.get(wireRequestId);
-      const requestId = questionRequestIds.get(wireRequestId) ?? wireRequestId;
+      const answersMap = session.questionAnswers.get(wireRequestId);
+      const texts = session.questionTexts.get(wireRequestId);
+      const requestId = session.questionRequestIds.get(wireRequestId) ?? wireRequestId;
       if (answersMap) {
         answersMap.set(qKey, answerValue);
         const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
@@ -216,10 +220,7 @@ export function attachBotHandlers(client: Client) {
             record[text] = v;
           }
           session.resolveQuestionRequest(wireRequestId, requestId, record);
-          questionAnswers.delete(wireRequestId);
-          questionOptions.delete(wireRequestId);
-          questionTexts.delete(wireRequestId);
-          questionRequestIds.delete(wireRequestId);
+          session.clearQuestionState(wireRequestId);
         }
       }
 
@@ -228,6 +229,10 @@ export function attachBotHandlers(client: Client) {
     }
 
     if (!interaction.isChatInputCommand()) return;
+    if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
+      await interaction.reply({ content: "You are not authorized to use this bot.", ephemeral: true });
+      return;
+    }
     const { commandName, channel, user } = interaction;
 
     if (commandName === "new") {
@@ -345,13 +350,18 @@ export function attachBotHandlers(client: Client) {
         return;
       }
       const path = interaction.options.getString("path", true);
-      // For v1, we just store it in-memory on the session if one exists, or acknowledge it.
       const thread = channel as ThreadChannel;
-      const session = SessionManager.get(thread.id);
-      if (session) {
-        session.workDir = path;
+      try {
+        const sanitized = sanitizeWorkDir(path);
+        const session = SessionManager.get(thread.id);
+        if (session) {
+          session.workDir = sanitized;
+        }
+        await interaction.reply({ content: `Working directory set to \`${sanitized}\` for this thread.`, ephemeral: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await interaction.reply({ content: `❌ Invalid path: ${msg}`, ephemeral: true });
       }
-      await interaction.reply({ content: `Working directory set to \`${path}\` for this thread.`, ephemeral: true });
       return;
     }
 
@@ -486,7 +496,14 @@ export function attachBotHandlers(client: Client) {
       }
       if (commandName === "add-dir") {
         const p = interaction.options.getString("path", true);
-        prompt += ` ${p}`;
+        try {
+          const sanitized = sanitizeWorkDir(p);
+          prompt += ` ${sanitized}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await interaction.reply({ content: `❌ Invalid path: ${msg}`, ephemeral: true });
+          return;
+        }
       }
       await interaction.reply({ content: `➡️ Sending \`${prompt}\` to kimi…`, ephemeral: true });
       const { runTurn } = await import("./turn.js");
@@ -512,8 +529,5 @@ export function attachBotHandlers(client: Client) {
   });
 }
 
-function buildErrorEmbed(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  return new EmbedBuilder().setTitle("❌ Session Error").setDescription(msg).setColor(0xdc2626);
-}
+
 
