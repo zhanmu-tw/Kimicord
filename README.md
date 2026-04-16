@@ -1,6 +1,12 @@
+<p align="center">
+  <img src="assets/slightly_terrifying_logo.png" alt="Kimicord logo" width="300">
+</p>
+
 # Kimicord
 
 A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn/) sessions via Wire mode.
+
+> ⭐ If you find Kimicord useful, please consider leaving a star on the repository — it really helps!
 
 ## Features
 
@@ -13,11 +19,13 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 ## Quick start
 
 1. Copy the example environment file and fill in your values:
+
    ```bash
    cp .env.example .env
    ```
 
 2. Use the pre-built image from GitHub Container Registry with Docker Compose:
+
    ```yaml
    services:
      kimicord:
@@ -44,16 +52,19 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    ```
 
    Save it as `docker-compose.yml` and run:
+
    ```bash
    docker compose up -d
    ```
 
    Or build from source instead:
+
    ```bash
    docker compose up --build -d
    ```
 
 3. Log in to Kimi CLI inside the container:
+
    ```bash
    docker compose exec kimicord bash
    kimi login
@@ -66,22 +77,22 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
 
 ## Slash commands
 
-| Command | Description |
-|---------|-------------|
-| `/new [prompt]` | Force-start a new session in the current thread |
-| `/interrupt` | Interrupt the current turn without killing the session |
-| `/stop` | Cancel the current turn and kill the session |
-| `/status` | Show session info |
-| `/workdir <path>` | Set working directory for the thread's next session |
-| `/sessions` | List all sessions (admin only) |
-| `/compact [focus]` | Compact the Kimi context |
-| `/clear` | Clear the Kimi context |
-| `/yolo` | Toggle YOLO mode |
-| `/plan [mode]` | Toggle or view plan mode |
-| `/add-dir <path>` | Add a directory to the workspace |
-| `/export` | Export current context and upload it as a Discord file attachment |
-| `/init` | Generate `AGENTS.md` via Kimi |
-| `/test <type>` | Send a test request (`approval`, `toolcall`, `question`, `multiselect`) |
+| Command            | Description                                                             |
+| ------------------ | ----------------------------------------------------------------------- |
+| `/new [prompt]`    | Force-start a new session in the current thread                         |
+| `/interrupt`       | Interrupt the current turn without killing the session                  |
+| `/stop`            | Cancel the current turn and kill the session                            |
+| `/status`          | Show session info                                                       |
+| `/workdir <path>`  | Set working directory for the thread's next session                     |
+| `/sessions`        | List all sessions (admin only)                                          |
+| `/compact [focus]` | Compact the Kimi context                                                |
+| `/clear`           | Clear the Kimi context                                                  |
+| `/yolo`            | Toggle YOLO mode                                                        |
+| `/plan [mode]`     | Toggle or view plan mode                                                |
+| `/add-dir <path>`  | Add a directory to the workspace                                        |
+| `/export`          | Export current context and upload it as a Discord file attachment       |
+| `/init`            | Generate `AGENTS.md` via Kimi                                           |
+| `/test <type>`     | Send a test request (`approval`, `toolcall`, `question`, `multiselect`) |
 
 ## Environment variables
 
