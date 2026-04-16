@@ -1,6 +1,8 @@
 import http from "node:http";
+import { URL } from "node:url";
 import { SessionManager } from "./session.js";
 import { listAllSessions } from "./db.js";
+import { CONFIG } from "./config.js";
 
 const PORT = Number(process.env.DASHBOARD_PORT ?? 3000);
 
@@ -95,9 +97,27 @@ setInterval(load, 2000);
 </body>
 </html>`;
 
+function isAuthorized(req: http.IncomingMessage): boolean {
+  if (!CONFIG.dashboardApiKey) return true;
+  const auth = req.headers.authorization;
+  if (auth && auth.startsWith("Bearer ") && auth.slice(7) === CONFIG.dashboardApiKey) {
+    return true;
+  }
+  const url = req.url ? new URL(req.url, `http://${req.headers.host}`) : null;
+  if (url?.searchParams.get("key") === CONFIG.dashboardApiKey) {
+    return true;
+  }
+  return false;
+}
+
 export function startDashboard() {
   const server = http.createServer((req, res) => {
-    if (req.url === "/api/sessions") {
+    if (!isAuthorized(req)) {
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("Unauthorized");
+      return;
+    }
+    if (req.url === "/api/sessions" || req.url?.startsWith("/api/sessions?")) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(getSessionsData()));
       return;
