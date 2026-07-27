@@ -1,6 +1,7 @@
 services:
   kimicord:
     build: .
+    init: true
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_APP_ID: ${DISCORD_APP_ID}
@@ -9,16 +10,40 @@ services:
       CHANNEL_MODE_IDS: ${CHANNEL_MODE_IDS}
       FORUM_MODE_IDS: ${FORUM_MODE_IDS}
       KIMI_WORK_DIR: ${KIMI_WORK_DIR:-/workspace}
-      KIMI_MODEL: ${KIMI_MODEL:-kimi-k2.5}
       KIMI_YOLO: ${KIMI_YOLO:-false}
       SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-1800000}
       SHOW_THINKING: ${SHOW_THINKING:-false}
       SHOW_STATUS_EMBED: ${SHOW_STATUS_EMBED:-false}
+      SHOW_TOOL_OUTPUT: ${SHOW_TOOL_OUTPUT:-true}
+      DASHBOARD_PORT: ${DASHBOARD_PORT:-3000}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY}
       MCP_CONFIG_PATH: ${MCP_CONFIG_PATH:-/app/data/mcp.json}
     ports:
       - "${DASHBOARD_PORT:-3000}:${DASHBOARD_PORT:-3000}"
     volumes:
+      # The container runs as the non-root `node` user (uid 1000). The host
+      # directories below must be writable by that uid, e.g.:
+      #   mkdir -p kimicord/data kimicord/.kimi-code
+      #   chown -R 1000:1000 kimicord
       - ./kimicord/data:/app/data
-      - ./kimicord/.kimi:/root/.kimi
+      # The new Kimi Code CLI stores its config in ~/.kimi-code.
+      - ./kimicord/.kimi-code:/home/node/.kimi-code
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      # Any HTTP response means the dashboard is up (401 without a key is fine).
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch(`http://127.0.0.1:$${process.env.DASHBOARD_PORT || 3000}/api/sessions`, { headers: { authorization: `Bearer $${process.env.DASHBOARD_API_KEY || ''}` } }).then(() => process.exit(0)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped

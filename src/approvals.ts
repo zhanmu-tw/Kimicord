@@ -12,13 +12,29 @@ import {
   ApprovalRequestPayload,
   QuestionRequestPayload,
   QuestionItem,
-  QuestionOption,
 } from "./wire.js";
 import { KimiSession } from "./session.js";
 
 type SendableThread = ThreadChannel | TextChannel;
 
 export const questionSuggestions = new Map<string, string[]>();
+
+// Ids of requests that have already been resolved (by a user click or a
+// timeout), so a late second resolution attempt becomes a no-op.
+const resolvedRequests = new Set<string>();
+
+/**
+ * Marks a request as resolved. Returns true the first time a given
+ * wireRequestId is marked, false for every subsequent call — callers should
+ * treat false as "already handled" and not resolve again.
+ */
+export function tryMarkResolved(wireRequestId: string): boolean {
+  if (resolvedRequests.has(wireRequestId)) return false;
+  // Bound the set so it can't grow forever over long uptimes
+  if (resolvedRequests.size > 5000) resolvedRequests.clear();
+  resolvedRequests.add(wireRequestId);
+  return true;
+}
 
 export async function postApproval(
   channel: SendableThread,
@@ -49,14 +65,14 @@ export async function postApproval(
   const msg = await channel.send({ embeds: [embed], components: [row] });
 
   session.registerPendingRequest(wireRequestId, "ApprovalRequest", 120000).then((res) => {
-    if (res === "__timeout__") {
+    if (res === "__timeout__" && tryMarkResolved(wireRequestId)) {
       session.resolveRequest(wireRequestId, "deny");
       msg.edit({
         content: "Auto-denied — timed out.",
         components: disableComponents(row),
       }).catch(() => {});
     }
-  });
+  }).catch(console.error);
 
   return msg;
 }
@@ -74,6 +90,7 @@ export async function postQuestion(
 
   for (let i = 0; i < payload.questions.length; i++) {
     const q = payload.questions[i];
+    if (!q) continue;
     const qKey = `q${i}`;
     texts.push(q.question);
     answers.set(qKey, "");
@@ -91,17 +108,20 @@ export async function postQuestion(
 
   session.registerPendingRequest(wireRequestId, "QuestionRequest", 300000).then((res) => {
     session.clearQuestionState(wireRequestId);
-    if (res === "__timeout__") {
+    if (res === "__timeout__" && tryMarkResolved(wireRequestId)) {
       const emptyAnswers: Record<string, string> = {};
       session.resolveQuestionRequest(wireRequestId, payload.id, emptyAnswers);
       for (const msg of messages) {
         msg.edit({ content: "Timed out.", components: [] }).catch(() => {});
       }
     }
-  });
+  }).catch(console.error);
 
   return messages;
 }
+
+const MAX_BUTTON_OPTIONS = 25;
+const MAX_SELECT_OPTIONS = 25;
 
 async function postSingleSelect(
   channel: SendableThread,
@@ -110,22 +130,33 @@ async function postSingleSelect(
   qKey: string,
   q: QuestionItem
 ): Promise<Message> {
+  let description = truncate(q.question, 4096);
+  if (q.options.length > MAX_BUTTON_OPTIONS) {
+    description += `\n*(Too many options — showing the first ${MAX_BUTTON_OPTIONS}.)*`;
+  }
+
   const embed = new EmbedBuilder()
-    .setTitle(q.header ? `❓ ${q.header}` : "❓ Question")
-    .setDescription(q.question)
+    .setTitle(truncate(q.header ? `❓ ${q.header}` : "❓ Question", 256))
+    .setDescription(description)
     .setColor(0x3b82f6);
 
-  const row = new ActionRowBuilder<ButtonBuilder>();
-  q.options.forEach((opt, i) => {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`answer:${wireRequestId}:${session.threadId}:${qKey}:${i}`)
-        .setLabel(truncate(opt.label, 80))
-        .setStyle(ButtonStyle.Primary)
-    );
-  });
+  // Discord allows at most 5 buttons per action row
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  const opts = q.options.slice(0, MAX_BUTTON_OPTIONS);
+  for (let i = 0; i < opts.length; i += 5) {
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    opts.slice(i, i + 5).forEach((opt, j) => {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`answer:${wireRequestId}:${session.threadId}:${qKey}:${i + j}`)
+          .setLabel(truncate(opt.label, 80))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(row);
+  }
 
-  return channel.send({ embeds: [embed], components: [row] });
+  return channel.send({ embeds: [embed], components: rows });
 }
 
 async function postMultiSelect(
@@ -135,21 +166,30 @@ async function postMultiSelect(
   qKey: string,
   q: QuestionItem
 ): Promise<Message> {
+  let description = `${truncate(q.question, 4000)}\n*Select one or more options from the dropdown.*`;
+  if (q.options.length > MAX_SELECT_OPTIONS) {
+    description += `\n*(Too many options — showing the first ${MAX_SELECT_OPTIONS}.)*`;
+  }
+
   const embed = new EmbedBuilder()
-    .setTitle(q.header ? `☑️ ${q.header}` : "☑️ Multi-select")
-    .setDescription(`${q.question}\n*Select one or more options from the dropdown.*`)
+    .setTitle(truncate(q.header ? `☑️ ${q.header}` : "☑️ Multi-select", 256))
+    .setDescription(description)
     .setColor(0x8b5cf6);
 
+  // Use option indices as values: label values can exceed 100 chars or be
+  // duplicated, both of which Discord rejects. The interaction handler maps
+  // the indices back to labels via session.questionOptions.
+  const opts = q.options.slice(0, MAX_SELECT_OPTIONS);
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`multiselect:${wireRequestId}:${session.threadId}:${qKey}`)
     .setPlaceholder("Choose options...")
     .setMinValues(1)
-    .setMaxValues(q.options.length)
+    .setMaxValues(Math.max(1, opts.length))
     .addOptions(
-      q.options.map((opt) => ({
-        label: truncate(opt.label, 25),
-        value: opt.label,
-        description: opt.description ? truncate(opt.description, 50) : undefined,
+      opts.map((opt, i) => ({
+        label: truncate(opt.label, 100),
+        value: String(i),
+        description: opt.description ? truncate(opt.description, 100) : undefined,
       }))
     );
 

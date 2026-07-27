@@ -1,4 +1,4 @@
-import { Message, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js";
+import { ChannelType, Message, PermissionFlagsBits, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js";
 import { ChannelConfig, CONFIG } from "../config.js";
 import { SessionManager } from "../session.js";
 import { insertSession } from "../db.js";
@@ -8,16 +8,31 @@ import { buildErrorEmbed } from "../errors.js";
 
 export async function handleTrigger(message: Message, config: ChannelConfig) {
   if (!CONFIG.allowedUserIds.has(message.author.id)) {
-    await message.react("❌");
+    await message.react("❌").catch(() => {});
     return;
   }
 
+  // Pre-flight: make sure we can create threads here before doing any work
+  if (
+    message.guild &&
+    (message.channel.type === ChannelType.GuildText || message.channel.type === ChannelType.GuildAnnouncement)
+  ) {
+    const me = message.guild.members.me;
+    const perms = me ? message.channel.permissionsFor(me) : null;
+    if (!perms?.has(PermissionFlagsBits.CreatePublicThreads)) {
+      await message
+        .reply("❌ I don't have permission to create threads in this channel.")
+        .catch(() => {});
+      return;
+    }
+  }
+
   const promptText = stripMentions(message.content, message.client.user?.id);
-  const threadName = `kimi — ${promptText.slice(0, 40)}`;
+  const threadName = `kimi — ${(promptText || "(no text)").slice(0, 40)}`;
 
   const thread = await message.startThread({
     name: threadName,
-    autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
+    autoArchiveDuration: ThreadAutoArchiveDuration.OneWeek,
   });
 
   const sessionId = randomUUID();
@@ -35,6 +50,13 @@ export async function handleTrigger(message: Message, config: ChannelConfig) {
   const session = SessionManager.getOrCreate(thread.id, sessionId, CONFIG.kimiWorkDir, CONFIG.kimiYolo);
   ensureDequeueHandler(session, thread);
 
+  if (!promptText) {
+    await thread
+      .send("💡 Session ready — send a message in this thread to start a turn with Kimi.")
+      .catch(() => {});
+    return;
+  }
+
   runTurn(session, thread, promptText, message).catch(async (e) => {
     console.error(e);
     await thread.send({ embeds: [buildErrorEmbed(e)] });
@@ -43,7 +65,7 @@ export async function handleTrigger(message: Message, config: ChannelConfig) {
 
 export async function handleThreadReply(message: Message) {
   if (!message.channel.isThread() || !CONFIG.allowedUserIds.has(message.author.id)) {
-    await message.react("❌");
+    await message.react("❌").catch(() => {});
     return;
   }
 
@@ -58,8 +80,13 @@ export async function handleThreadReply(message: Message) {
   ensureDequeueHandler(session, thread);
 
   if (session.state === "busy") {
+    // Only react to the first queued message per busy period — reacting to
+    // every queued message hits reaction rate limits when many lines are pasted.
+    const firstQueued = session.messageQueue.length === 0;
     session.messageQueue.push({ text: message.content, context: message });
-    await message.react("⏳");
+    if (firstQueued) {
+      await message.react("⏳").catch(() => {});
+    }
   } else {
     runTurn(session, thread, message.content, message).catch(async (e) => {
       console.error(e);
@@ -87,5 +114,4 @@ function stripMentions(content: string, botId?: string): string {
   const regex = new RegExp(`<@!?${botId}>`, "g");
   return content.replace(regex, "").trim();
 }
-
 

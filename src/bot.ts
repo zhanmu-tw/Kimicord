@@ -10,8 +10,10 @@ import {
   EmbedBuilder,
   PermissionFlagsBits,
   ChannelType,
+  MessageFlags,
 } from "discord.js";
 import { CONFIG, sanitizeWorkDir } from "./config.js";
+import { tryMarkResolved } from "./approvals.js";
 import { SessionManager } from "./session.js";
 import * as channelMode from "./modes/channel.js";
 import * as forumMode from "./modes/forum.js";
@@ -99,59 +101,73 @@ export async function registerCommands() {
 
 export function attachBotHandlers(client: Client) {
   client.on(Events.MessageCreate, async (message: Message) => {
-    if (message.author.bot) return;
-    if (message.guildId && !client.guilds.cache.has(message.guildId)) return;
+    try {
+      if (message.author.bot) return;
+      if (message.guildId && !client.guilds.cache.has(message.guildId)) return;
 
-    // Determine effective channel id
-    const channelId = message.channel.isThread() ? message.channel.parentId ?? message.channelId : message.channelId;
-    const config = CONFIG.channels.get(channelId);
-    if (!config) return;
+      // Determine effective channel id
+      const channelId = message.channel.isThread() ? message.channel.parentId ?? message.channelId : message.channelId;
+      const config = CONFIG.channels.get(channelId);
+      if (!config) return;
 
-    // Guild filter: ignore other guilds if we only care about configured channels
-    if (!message.guildId) return;
+      // Guild filter: ignore other guilds if we only care about configured channels
+      if (!message.guildId) return;
 
-    if (config.discordMode === "channel") {
-      if (!message.channel.isThread()) {
-        if (config.trigger === "any" || message.mentions.has(client.user?.id ?? "")) {
-          await channelMode.handleTrigger(message, config);
+      if (config.discordMode === "channel") {
+        if (!message.channel.isThread()) {
+          if (config.trigger === "any" || message.mentions.has(client.user?.id ?? "")) {
+            await channelMode.handleTrigger(message, config);
+          }
+        } else {
+          if (SessionManager.get(message.channelId)) {
+            await channelMode.handleThreadReply(message);
+          }
         }
-      } else {
-        if (SessionManager.get(message.channelId)) {
-          await channelMode.handleThreadReply(message);
+      } else if (config.discordMode === "forum") {
+        if (message.channel.isThread() && SessionManager.get(message.channelId)) {
+          await forumMode.handleReply(message);
         }
       }
-    } else if (config.discordMode === "forum") {
-      if (message.channel.isThread() && SessionManager.get(message.channelId)) {
-        await forumMode.handleReply(message);
-      }
+    } catch (e) {
+      console.error("MessageCreate handler error:", e);
     }
   });
 
   client.on(Events.ThreadCreate, async (thread: ThreadChannel) => {
-    const config = CONFIG.channels.get(thread.parentId ?? "");
-    if (!config || config.discordMode !== "forum") return;
-    await forumMode.handleNewPost(thread, config);
+    try {
+      const config = CONFIG.channels.get(thread.parentId ?? "");
+      if (!config || config.discordMode !== "forum") return;
+      await forumMode.handleNewPost(thread, config);
+    } catch (e) {
+      console.error("ThreadCreate handler error:", e);
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (interaction.isButton()) {
       if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
-        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        await interaction.reply({ content: "You are not authorized to interact with this bot.", flags: MessageFlags.Ephemeral }).catch(() => {});
         return;
       }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
       const [type, wireRequestId, threadId, ...rest] = parts;
+      if (!type || !wireRequestId || !threadId) return;
 
       const session = SessionManager.get(threadId);
       if (!session) {
-        await interaction.update({ content: "Session not found.", components: [] }).catch(() => {});
+        await interaction.reply({ content: "Session not found.", flags: MessageFlags.Ephemeral }).catch(() => {});
         return;
       }
 
       if (type === "approve") {
         const value = rest[0];
+        if (!value) return;
+        if (!tryMarkResolved(wireRequestId)) {
+          await interaction.reply({ content: "This request was already handled.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          return;
+        }
         session.resolveRequest(wireRequestId, value);
         await interaction.update({ content: `Selected: ${value}`, components: [] }).catch(() => {});
         return;
@@ -170,11 +186,14 @@ export function attachBotHandlers(client: Client) {
         if (answersMap) {
           answersMap.set(qKey, answerValue);
           const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
-          if (allAnswered) {
+          if (allAnswered && tryMarkResolved(wireRequestId)) {
             const record: Record<string, string> = {};
             for (const [k, v] of answersMap) {
-              const text = texts?.[Number(k.slice(1))] ?? k;
-              record[text] = v;
+              const text = texts?.[Number(k.slice(1))];
+              if (text === undefined) {
+                console.error(`Missing question text for ${wireRequestId}:${k}; using placeholder`);
+              }
+              record[text ?? "question"] = v;
             }
             session.resolveQuestionRequest(wireRequestId, requestId, record);
             session.clearQuestionState(wireRequestId);
@@ -188,24 +207,27 @@ export function attachBotHandlers(client: Client) {
 
     if (interaction.isStringSelectMenu()) {
       if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
-        await interaction.update({ content: "You are not authorized to interact with this bot.", components: [] }).catch(() => {});
+        await interaction.reply({ content: "You are not authorized to interact with this bot.", flags: MessageFlags.Ephemeral }).catch(() => {});
         return;
       }
       const customId = interaction.customId;
       const parts = customId.split(":");
       if (parts.length < 4) return;
       const [type, wireRequestId, threadId, ...rest] = parts;
+      if (!type || !wireRequestId || !threadId) return;
       if (type !== "multiselect") return;
 
       const session = SessionManager.get(threadId);
       if (!session) {
-        await interaction.update({ content: "Session not found.", components: [] }).catch(() => {});
+        await interaction.reply({ content: "Session not found.", flags: MessageFlags.Ephemeral }).catch(() => {});
         return;
       }
 
       const qKey = rest.join(":");
-      const selected = interaction.values; // string[]
-      const answerValue = selected.join(", ");
+      // Select menu values are option indices; map them back to labels
+      const optionsMap = session.questionOptions.get(wireRequestId);
+      const labels = optionsMap?.get(qKey) ?? [];
+      const answerValue = interaction.values.map((v) => labels[Number(v)] ?? v).join(", ");
 
       const answersMap = session.questionAnswers.get(wireRequestId);
       const texts = session.questionTexts.get(wireRequestId);
@@ -213,11 +235,14 @@ export function attachBotHandlers(client: Client) {
       if (answersMap) {
         answersMap.set(qKey, answerValue);
         const allAnswered = Array.from(answersMap.values()).every((v) => v.length > 0);
-        if (allAnswered) {
+        if (allAnswered && tryMarkResolved(wireRequestId)) {
           const record: Record<string, string> = {};
           for (const [k, v] of answersMap) {
-            const text = texts?.[Number(k.slice(1))] ?? k;
-            record[text] = v;
+            const text = texts?.[Number(k.slice(1))];
+            if (text === undefined) {
+              console.error(`Missing question text for ${wireRequestId}:${k}; using placeholder`);
+            }
+            record[text ?? "question"] = v;
           }
           session.resolveQuestionRequest(wireRequestId, requestId, record);
           session.clearQuestionState(wireRequestId);
@@ -230,17 +255,19 @@ export function attachBotHandlers(client: Client) {
 
     if (!interaction.isChatInputCommand()) return;
     if (!CONFIG.allowedUserIds.has(interaction.user.id)) {
-      await interaction.reply({ content: "You are not authorized to use this bot.", ephemeral: true });
+      await interaction.reply({ content: "You are not authorized to use this bot.", flags: MessageFlags.Ephemeral });
       return;
     }
     const { commandName, channel, user } = interaction;
 
     if (commandName === "new") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
+      // Session spawn + dynamic imports can exceed the 3s interaction window
+      await interaction.deferReply();
       if (SessionManager.get(thread.id)) {
         SessionManager.destroy(thread.id);
         deleteSessionByThread(thread.id);
@@ -271,7 +298,7 @@ export function attachBotHandlers(client: Client) {
           });
         });
       }
-      await interaction.reply("🟡 New session started.");
+      await interaction.editReply("🟡 New session started.");
       if (prompt) {
         runTurn(session, thread, prompt).catch(async (e) => {
           await thread.send({ embeds: [buildErrorEmbed(e)] });
@@ -282,51 +309,53 @@ export function attachBotHandlers(client: Client) {
 
     if (commandName === "interrupt") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No active session here.", ephemeral: true });
+        await interaction.reply({ content: "No active session here.", flags: MessageFlags.Ephemeral });
         return;
       }
       if (session.state !== "busy") {
-        await interaction.reply({ content: "Session is not currently busy.", ephemeral: true });
+        await interaction.reply({ content: "Session is not currently busy.", flags: MessageFlags.Ephemeral });
         return;
       }
+      await interaction.deferReply();
       await session.cancel();
-      await interaction.reply("⏹️ Turn interrupted.");
+      await interaction.editReply("⏹️ Turn interrupted.");
       return;
     }
 
     if (commandName === "stop") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No active session here.", ephemeral: true });
+        await interaction.reply({ content: "No active session here.", flags: MessageFlags.Ephemeral });
         return;
       }
+      await interaction.deferReply();
       await session.cancel();
       SessionManager.destroy(thread.id);
       deleteSessionByThread(thread.id);
-      await interaction.reply("🛑 Session stopped.");
+      await interaction.editReply("🛑 Session stopped.");
       return;
     }
 
     if (commandName === "status") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const row = getSessionByThread(thread.id);
@@ -340,13 +369,13 @@ export function attachBotHandlers(client: Client) {
           { name: "State", value: session.state, inline: true }
         )
         .setColor(0x3b82f6);
-      await interaction.reply({ embeds: [embed], ephemeral: true });
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (commandName === "workdir") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const path = interaction.options.getString("path", true);
@@ -357,17 +386,17 @@ export function attachBotHandlers(client: Client) {
         if (session) {
           session.workDir = sanitized;
         }
-        await interaction.reply({ content: `Working directory set to \`${sanitized}\` for this thread.`, ephemeral: true });
+        await interaction.reply({ content: `Working directory set to \`${sanitized}\` for this thread.`, flags: MessageFlags.Ephemeral });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await interaction.reply({ content: `❌ Invalid path: ${msg}`, ephemeral: true });
+        await interaction.reply({ content: `❌ Invalid path: ${msg}`, flags: MessageFlags.Ephemeral });
       }
       return;
     }
 
     if (commandName === "sessions") {
       if (!CONFIG.allowedUserIds.has(user.id)) {
-        await interaction.reply({ content: "Admin only.", ephemeral: true });
+        await interaction.reply({ content: "Admin only.", flags: MessageFlags.Ephemeral });
         return;
       }
       const rows = listAllSessions();
@@ -375,25 +404,45 @@ export function attachBotHandlers(client: Client) {
         const s = SessionManager.get(r.thread_id);
         return `- \`${r.session_id.slice(0, 8)}\` | ${r.mode} | ${s?.state ?? "dormant"} | <#${r.thread_id}>`;
       });
-      const content = lines.length ? lines.join("\n").slice(0, 1900) : "No sessions.";
-      await interaction.reply({ content, ephemeral: true });
+      // Truncate at a line boundary so we never cut a mention in half
+      let content = "No sessions.";
+      if (lines.length) {
+        const shown: string[] = [];
+        let len = 0;
+        for (const line of lines) {
+          if (len + line.length + 1 > 1900) break;
+          shown.push(line);
+          len += line.length + 1;
+        }
+        const hidden = lines.length - shown.length;
+        content = shown.join("\n") + (hidden > 0 ? `\n…and ${hidden} more` : "");
+      }
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (commandName === "export") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({ content: "➡️ Exporting context…", ephemeral: true });
+      await interaction.reply({ content: "➡️ Exporting context…", flags: MessageFlags.Ephemeral });
       const { runTurn } = await import("./turn.js");
-      const renderer = await runTurn(session, thread, "/export");
+      // The ACP layer does not intercept "/export" (unknown command), so ask the
+      // model to write the export itself. The reply phrasing "Exported N
+      // messages to <path>.md" is what TurnRenderer.lastExportPath parses.
+      const exportPrompt =
+        "Export this conversation so far to a markdown file named " +
+        `kimi-export-${new Date().toISOString().replace(/[:.]/g, "-")}.md ` +
+        "in the current working directory, including all user and assistant messages. " +
+        "When done, reply with exactly: Exported N messages to <absolute file path>";
+      const renderer = await runTurn(session, thread, exportPrompt);
       const mdPath = renderer.lastExportPath;
       if (mdPath) {
         try {
@@ -410,16 +459,18 @@ export function attachBotHandlers(client: Client) {
 
     if (commandName === "test") {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const testType = interaction.options.getString("type", true);
+      // Posting the test components does a dynamic import + channel sends
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const wireRequestId = `test-${Date.now()}`;
       const { postApproval, postToolCallRequest, postQuestion } = await import("./approvals.js");
 
@@ -469,20 +520,20 @@ export function attachBotHandlers(client: Client) {
         });
       }
 
-      await interaction.reply({ content: `🧪 Test ${testType} sent.`, ephemeral: true });
+      await interaction.editReply({ content: `🧪 Test ${testType} sent.` });
       return;
     }
 
     const proxyCommands = ["compact", "clear", "yolo", "plan", "add-dir", "init"];
     if (proxyCommands.includes(commandName)) {
       if (!channel || !(channel instanceof ThreadChannel)) {
-        await interaction.reply({ content: "This command only works inside a thread.", ephemeral: true });
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       const thread = channel as ThreadChannel;
       const session = SessionManager.get(thread.id);
       if (!session) {
-        await interaction.reply({ content: "No session in this thread.", ephemeral: true });
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
       let prompt = "/" + commandName;
@@ -501,11 +552,11 @@ export function attachBotHandlers(client: Client) {
           prompt += ` ${sanitized}`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          await interaction.reply({ content: `❌ Invalid path: ${msg}`, ephemeral: true });
+          await interaction.reply({ content: `❌ Invalid path: ${msg}`, flags: MessageFlags.Ephemeral });
           return;
         }
       }
-      await interaction.reply({ content: `➡️ Sending \`${prompt}\` to kimi…`, ephemeral: true });
+      await interaction.reply({ content: `➡️ Sending \`${prompt}\` to kimi…`, flags: MessageFlags.Ephemeral });
       const { runTurn } = await import("./turn.js");
       runTurn(session, thread, prompt).catch(async (e) => {
         await thread.send({ embeds: [buildErrorEmbed(e)] });

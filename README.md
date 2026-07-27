@@ -4,11 +4,11 @@
 
 # Kimicord
 
-A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn/) sessions via Wire mode.
+A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonshot.cn/) sessions via [ACP](https://agentclientprotocol.com) (Agent Client Protocol).
 
 > ⭐ If you find Kimicord useful, please consider leaving a star on the repository — it really helps!
 
-**Why Kimicord?** After trying other agents like Hermes, OpenClaw, and more, I wanted a solid coding agent that could live inside Discord. That way I can forward issues from my self-hosted Gitea straight to a bot and have it carry out the work. Kimi CLI's Wire mode made this possible — I can even run my own self hosted models (like Qwen 3.5 35B) just by changing the kimi config.yaml
+**Why Kimicord?** After trying other agents like Hermes, OpenClaw, and more, I wanted a solid coding agent that could live inside Discord. That way I can forward issues from my self-hosted Gitea straight to a bot and have it carry out the work. Kimi Code CLI's ACP mode made this possible — I can even run my own self hosted models just by changing the kimi `config.toml`
 
 ## Features
 
@@ -32,6 +32,7 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    services:
      kimicord:
        image: ghcr.io/zhanmu-tw/kimicord:latest
+       init: true
        environment:
          DISCORD_TOKEN: ${DISCORD_TOKEN}
          DISCORD_APP_ID: ${DISCORD_APP_ID}
@@ -40,16 +41,24 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
          CHANNEL_MODE_IDS: ${CHANNEL_MODE_IDS}
          FORUM_MODE_IDS: ${FORUM_MODE_IDS}
          KIMI_WORK_DIR: ${KIMI_WORK_DIR:-/workspace}
-         KIMI_MODEL: ${KIMI_MODEL:-kimi-k2.5}
          KIMI_YOLO: ${KIMI_YOLO:-false}
          SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-1800000}
          SHOW_THINKING: ${SHOW_THINKING:-false}
          SHOW_STATUS_EMBED: ${SHOW_STATUS_EMBED:-false}
+         SHOW_TOOL_OUTPUT: ${SHOW_TOOL_OUTPUT:-true}
+         DASHBOARD_PORT: ${DASHBOARD_PORT:-3000}
+         DASHBOARD_API_KEY: ${DASHBOARD_API_KEY}
+         MCP_CONFIG_PATH: ${MCP_CONFIG_PATH:-/app/data/mcp.json}
        ports:
          - "${DASHBOARD_PORT:-3000}:${DASHBOARD_PORT:-3000}"
        volumes:
-         - ./data:/app/data
-         - ./kimi-data:/root/.kimi
+         # The container runs as the non-root `node` user (uid 1000); the host
+         # directories must be writable by that uid:
+         #   mkdir -p kimicord/data kimicord/.kimi-code
+         #   chown -R 1000:1000 kimicord
+         - ./kimicord/data:/app/data
+         # The new Kimi Code CLI stores its config in ~/.kimi-code.
+         - ./kimicord/.kimi-code:/home/node/.kimi-code
        restart: unless-stopped
    ```
 
@@ -65,12 +74,28 @@ A Discord bot that bridges Discord threads to [Kimi CLI](https://www.moonshot.cn
    docker compose up --build -d
    ```
 
-3. Log in to Kimi CLI inside the container:
+   The image is based on Node 24 and ships the new Node-based Kimi Code CLI,
+   which stores its configuration in `~/.kimi-code` inside the container
+   (mounted from `./kimicord/.kimi-code` on the host).
+
+3. Log in to Kimi Code CLI inside the container (device-code flow — follow the
+   URL it prints):
 
    ```bash
    docker compose exec kimicord bash
    kimi login
    ```
+
+   Headless alternative: instead of `kimi login`, put an API key in
+   `./kimicord/.kimi-code/config.toml` on the host:
+
+   ```toml
+   [providers.kimi.env]
+   KIMI_API_KEY = "sk-..."
+   ```
+
+   Note: the CLI reads `KIMI_API_KEY` from this config file, not from the
+   process environment.
 
 4. Restart the bot if needed:
    ```bash

@@ -1,0 +1,44 @@
+# Development override — builds from source, reads .env directly, and mounts a
+# persistent workspace. Hardening from docker-compose.yml is relaxed so you can
+# `docker compose -f compose.dev.yaml exec kimicord bash` and poke around.
+#
+# Usage:
+#   docker compose -f compose.dev.yaml up --build
+#
+# The container runs as the non-root `node` user (uid 1000). Prepare host dirs:
+#   mkdir -p kimicord/data kimicord/.kimi-code workspace
+#   chown -R 1000:1000 kimicord workspace
+#
+# Then authenticate the CLI once:
+#   docker compose -f compose.dev.yaml exec kimicord kimi login
+#   docker compose -f compose.dev.yaml restart
+services:
+  kimicord:
+    build: .
+    init: true
+    env_file: .env
+    environment:
+      KIMI_WORK_DIR: ${KIMI_WORK_DIR:-/workspace}
+      DASHBOARD_PORT: ${DASHBOARD_PORT:-3000}
+      MCP_CONFIG_PATH: ${MCP_CONFIG_PATH:-/app/data/mcp.json}
+    ports:
+      - "${DASHBOARD_PORT:-3000}:${DASHBOARD_PORT:-3000}"
+    volumes:
+      - ./kimicord/data:/app/data
+      # The Kimi Code CLI stores its config (and login credentials) in ~/.kimi-code.
+      - ./kimicord/.kimi-code:/home/node/.kimi-code
+      # Persistent agent workspace; matches KIMI_WORK_DIR above.
+      - ./workspace:/workspace
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Any HTTP response means the dashboard is up (401 without a key is fine).
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch(`http://127.0.0.1:$${process.env.DASHBOARD_PORT || 3000}/api/sessions`, { headers: { authorization: `Bearer $${process.env.DASHBOARD_API_KEY || ''}` } }).then(() => process.exit(0)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

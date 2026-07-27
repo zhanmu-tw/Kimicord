@@ -1,11 +1,11 @@
 # ---- Build stage ----
-FROM python:3.12-slim AS builder
+FROM node:24-slim AS builder
 
+# Toolchain for compiling better-sqlite3 from source. v12 ships prebuilds for
+# Node 24, so these are only a fallback for platforms without a prebuilt binary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gnupg git \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package*.json ./
@@ -16,18 +16,19 @@ RUN npm run build
 RUN npm prune --omit=dev && npm cache clean --force
 
 # ---- Runtime stage ----
-FROM python:3.12-slim
+FROM node:24-slim
 
+# git: required by the Kimi Code CLI. curl: used by the compose healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gnupg git \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get purge -y curl gnupg \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    ca-certificates git curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install kimi-cli
-RUN pip install --no-cache-dir kimi-cli
+# Install the Kimi Code CLI (self-contained binary, glibc only) into /usr/local
+# so `kimi` is on PATH for the non-root user. Pinned for reproducible builds;
+# bump KIMI_VERSION to upgrade.
+ARG KIMI_VERSION=0.29.2
+RUN curl -fsSL https://code.kimi.com/kimi-code/install.sh \
+    | KIMI_VERSION=${KIMI_VERSION} KIMI_INSTALL_DIR=/usr/local KIMI_NO_MODIFY_PATH=1 bash
 
 WORKDIR /app
 
@@ -37,6 +38,12 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY entrypoint.sh ./
 
-RUN chmod +x /app/entrypoint.sh
+# Run as the built-in non-root `node` user (uid 1000). Make the data dir, the
+# Kimi Code CLI config dir, and the default workspace writable by that user.
+RUN chmod +x /app/entrypoint.sh \
+    && mkdir -p /app/data /home/node/.kimi-code /workspace \
+    && chown -R node:node /app/data /home/node/.kimi-code /workspace
+
+USER node
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["npm", "start"]
+CMD ["node", "dist/index.js"]

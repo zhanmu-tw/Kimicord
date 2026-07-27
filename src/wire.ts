@@ -1,58 +1,9 @@
-export interface WireInitializeRequest {
-  jsonrpc: "2.0";
-  method: "initialize";
-  id: string;
-  params: {
-    protocol_version: string;
-    client: { name: string; version: string };
-    capabilities: { supports_question: boolean };
-  };
-}
-
-export interface WirePromptRequest {
-  jsonrpc: "2.0";
-  method: "prompt";
-  id: string;
-  params: { user_input: string };
-}
-
-export interface WireSteerRequest {
-  jsonrpc: "2.0";
-  method: "steer";
-  id: string;
-  params: { user_input: string };
-}
-
-export interface WireCancelRequest {
-  jsonrpc: "2.0";
-  method: "cancel";
-  id: string;
-}
-
-export interface WireResponse {
-  jsonrpc: "2.0";
-  id: string;
-  result: {
-    request_id: string;
-    response?: string;
-    answers?: Record<string, string>;
-  };
-}
-
-export type WireOutbound =
-  | WireInitializeRequest
-  | WirePromptRequest
-  | WireSteerRequest
-  | WireCancelRequest
-  | WireResponse;
-
-export interface WirePromptResult {
-  jsonrpc: "2.0";
-  id: string;
-  result: {
-    status: "finished" | "cancelled" | "max_steps_reached";
-  };
-}
+// ---------------------------------------------------------------------------
+// Frozen event/request payload shapes consumed by renderer.ts, turn.ts,
+// approvals.ts and bot.ts. These intentionally keep the legacy "wire" names —
+// session.ts translates ACP (Agent Client Protocol) traffic from `kimi acp`
+// into these shapes so consumers stay unchanged.
+// ---------------------------------------------------------------------------
 
 export interface WireEventMessage {
   jsonrpc: "2.0";
@@ -63,17 +14,7 @@ export interface WireEventMessage {
   };
 }
 
-export interface WireRequestMessage {
-  jsonrpc: "2.0";
-  method: "request";
-  id: string;
-  params: {
-    type: "ApprovalRequest" | "QuestionRequest" | "ToolCallRequest" | "HookRequest";
-    payload: unknown;
-  };
-}
-
-export type WireInbound = WirePromptResult | WireEventMessage | WireRequestMessage;
+export type WireRequestType = "ApprovalRequest" | "QuestionRequest" | "ToolCallRequest";
 
 export interface ContentPartTextPayload {
   type: "text";
@@ -87,7 +28,7 @@ export interface ContentPartThinkPayload {
 }
 
 export interface ToolCallPayload {
-  // Real shape from kimi-cli v1.34.0
+  // Legacy shape (from kimi-cli wire mode) that the renderer consumes.
   type: "function";
   id: string;
   function: {
@@ -163,14 +104,141 @@ export interface QuestionRequestPayload {
   questions: QuestionItem[];
 }
 
-export function isWireEvent(msg: WireInbound): msg is WireEventMessage {
-  return "method" in msg && msg.method === "event";
+export function makeWireEvent(type: string, payload: unknown): WireEventMessage {
+  return { jsonrpc: "2.0", method: "event", params: { type, payload } };
 }
 
-export function isWireRequest(msg: WireInbound): msg is WireRequestMessage {
-  return "method" in msg && msg.method === "request";
+// ---------------------------------------------------------------------------
+// ACP (Agent Client Protocol) — `kimi acp`, JSON-RPC 2.0 as NDJSON over stdio.
+// Hand-rolled client types; only the subset of the protocol the bridge uses.
+// ---------------------------------------------------------------------------
+
+export interface JsonRpcError {
+  code: number;
+  message: string;
+  data?: unknown;
 }
 
-export function isWirePromptResult(msg: WireInbound): msg is WirePromptResult {
-  return "result" in msg && !("method" in msg);
+/** kimi reports missing authentication as a server error with this code. */
+export const ACP_ERROR_AUTH_REQUIRED = -32000;
+
+export interface AcpRequestMessage {
+  jsonrpc: "2.0";
+  id: number;
+  method: string;
+  params?: unknown;
 }
+
+export interface AcpNotificationMessage {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+}
+
+export interface AcpResultResponse {
+  jsonrpc: "2.0";
+  id: number | string;
+  result: unknown;
+}
+
+export interface AcpErrorResponse {
+  jsonrpc: "2.0";
+  id: number | string;
+  error: JsonRpcError;
+}
+
+/** Agent → client request (expects a response), e.g. session/requestPermission. */
+export interface AcpServerRequest {
+  jsonrpc: "2.0";
+  id: number | string;
+  method: string;
+  params?: unknown;
+}
+
+export type AcpInboundMessage =
+  | AcpResultResponse
+  | AcpErrorResponse
+  | AcpServerRequest
+  | AcpNotificationMessage;
+
+export type AcpOutboundMessage =
+  | AcpRequestMessage
+  | AcpNotificationMessage
+  | { jsonrpc: "2.0"; id: number | string; result: unknown }
+  | { jsonrpc: "2.0"; id: number | string; error: JsonRpcError };
+
+export function isAcpResponse(msg: AcpInboundMessage): msg is AcpResultResponse | AcpErrorResponse {
+  return "id" in msg && !("method" in msg);
+}
+
+export function isAcpServerRequest(msg: AcpInboundMessage): msg is AcpServerRequest {
+  return "method" in msg && "id" in msg;
+}
+
+export interface AcpInitializeResult {
+  protocolVersion: number;
+  agentCapabilities?: { loadSession?: boolean };
+  authMethods?: unknown[];
+  agentInfo?: { name?: string; version?: string };
+}
+
+export interface AcpNewSessionResult {
+  sessionId: string;
+  modes?: unknown;
+  models?: unknown;
+  configOptions?: unknown;
+}
+
+export interface AcpPromptResult {
+  stopReason?: string;
+}
+
+export interface AcpContentBlock {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface AcpToolCallContent {
+  type: string;
+  content?: AcpContentBlock;
+  [key: string]: unknown;
+}
+
+/** Fields of tool_call / tool_call_update session updates (and requestPermission's toolCall). */
+export interface AcpToolCallInfo {
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  status?: string;
+  content?: AcpToolCallContent[];
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  [key: string]: unknown;
+}
+
+export interface AcpSessionUpdate {
+  sessionUpdate: string;
+  [key: string]: unknown;
+}
+
+export interface AcpSessionUpdateParams {
+  sessionId: string;
+  update: AcpSessionUpdate;
+}
+
+export interface AcpPermissionOption {
+  optionId: string;
+  name: string;
+  kind?: string; // "allow_once" | "allow_always" | "reject_once" | "reject_always"
+}
+
+export interface AcpRequestPermissionParams {
+  sessionId: string;
+  toolCall: AcpToolCallInfo;
+  options: AcpPermissionOption[];
+}
+
+export type AcpMcpServer =
+  | { name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }
+  | { name: string; type: "http"; url: string; headers: Array<{ name: string; value: string }> };

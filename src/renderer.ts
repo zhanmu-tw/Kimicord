@@ -17,10 +17,17 @@ import {
   TurnEndPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 
 type SendableChannel = ThreadChannel | TextChannel | NewsChannel | ForumChannel;
+
+// Status embeds are reused across turns within the same channel/thread
+// instead of posting a new status message per turn.
+const statusMessages = new Map<string, Message>();
+
+const STATUS_EDIT_MIN_INTERVAL_MS = 2000;
 
 export class TurnRenderer {
   private textBuffer = "";
@@ -36,6 +43,9 @@ export class TurnRenderer {
   >();
   private lastToolCallId: string | null = null;
   private statusMessage: Message | null = null;
+  private lastStatusEditAt = 0;
+  private statusTimer: NodeJS.Timeout | null = null;
+  private pendingStatus: string | null = null;
   private stepCount = 0;
   private contextUsage = 0;
   private finished = false;
@@ -52,8 +62,9 @@ export class TurnRenderer {
 
   async init(): Promise<void> {
     if (CONFIG.showStatusEmbed) {
-      const embed = this.buildStatusEmbed("🟡 Working");
-      this.statusMessage = await this.channel.send({ embeds: [embed] });
+      // Reuse the status message from a previous turn in this channel if there is one
+      this.statusMessage = statusMessages.get(this.channel.id) ?? null;
+      await this.updateStatus("🟡 Working");
     }
   }
 
@@ -68,8 +79,9 @@ export class TurnRenderer {
           const exportMatch = textPart.match(
             /exported\s+\d+\s+messages?\s+to\s+(\S+\.md)/i,
           );
-          if (exportMatch) {
-            this.lastExportPath = exportMatch[1];
+          const exportPath = exportMatch?.[1];
+          if (exportPath) {
+            this.lastExportPath = exportPath;
           }
           this.textBuffer += textPart;
           this.scheduleEdit();
@@ -161,85 +173,114 @@ export class TurnRenderer {
   private flushQueue: Promise<void> = Promise.resolve();
 
   private flushEdit(): Promise<void> {
-    this.flushQueue = this.flushQueue.then(async () => {
-      if (this.editTimer) {
-        clearTimeout(this.editTimer);
-        this.editTimer = null;
-      }
-      if (!this.textBuffer) return;
-      this.lastEditAt = Date.now();
+    // The catch is part of the stored chain: a failed send/edit must not
+    // poison the queue for every subsequent flush.
+    this.flushQueue = this.flushQueue
+      .then(async () => {
+        if (this.editTimer) {
+          clearTimeout(this.editTimer);
+          this.editTimer = null;
+        }
+        if (!this.textBuffer) return;
+        this.lastEditAt = Date.now();
 
-      // Strip raw QuestionResponse JSON that Kimi echoes back after answers
-      this.textBuffer = this.textBuffer
-        .replace(/```(?:json)?\s*\n?\{\s*"answers"\s*:[\s\S]*?\}\s*\n?```/g, "")
-        .replace(/\{\s*"answers"\s*:\s*\{[\s\S]*?\}\s*\}\s*/g, "")
-        .trimStart();
-      // Strip export confirmation text; the /export command uploads the file directly
-      this.textBuffer = this.textBuffer
-        .replace(
-          /Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi,
-          "",
-        )
-        .trimStart();
-      this.textBuffer = this.textBuffer.replace(/\n{2,}/g, "\n").trimStart();
-      if (!this.textBuffer) return;
+        // Strip raw QuestionResponse JSON that Kimi echoes back after answers
+        this.textBuffer = this.textBuffer
+          .replace(/```(?:json)?\s*\n?\{\s*"answers"\s*:[\s\S]*?\}\s*\n?```/g, "")
+          .replace(/\{\s*"answers"\s*:\s*\{[\s\S]*?\}\s*\}\s*/g, "")
+          .trimStart();
+        // Strip export confirmation text; the /export command uploads the file directly
+        this.textBuffer = this.textBuffer
+          .replace(
+            /Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi,
+            "",
+          )
+          .trimStart();
+        this.textBuffer = collapseBlankLinesOutsideFences(this.textBuffer).trimStart();
+        if (!this.textBuffer) return;
 
-      const chunks = splitMarkdown(this.textBuffer, 1900);
+        const chunks = splitMarkdown(this.textBuffer, 1900);
 
-      // If the final response is huge, replace it with a file attachment
-      if (this.finished && chunks.length > 3) {
-        const fileName = `kimi-output-${Date.now()}.md`;
-        const filePath = pathJoin(this.workDir, fileName);
-        writeFileSync(filePath, this.textBuffer);
-        if (this.discordMessage) {
-          try {
-            await this.discordMessage.delete();
-          } catch {
-            // ignore
+        // If the final response is huge, replace it with a file attachment
+        if (this.finished && chunks.length > 3) {
+          const filePath = this.writeTempOutput();
+          if (filePath) {
+            try {
+              if (this.discordMessage) {
+                try {
+                  await this.discordMessage.delete();
+                } catch {
+                  // ignore
+                }
+              }
+              for (const extra of this.extraMessages) {
+                try {
+                  await extra.delete();
+                } catch {
+                  // ignore
+                }
+              }
+              this.discordMessage = await this.channel.send({
+                content: "📄 Response is long, here's the file:",
+                files: [filePath],
+              });
+              this.extraMessages = [];
+              this.textBuffer = "";
+              return;
+            } finally {
+              try {
+                unlinkSync(filePath);
+              } catch {
+                // ignore
+              }
+            }
+          }
+          // Temp file unavailable — fall through to chunked messages
+        }
+
+        if (!this.discordMessage) {
+          this.discordMessage = await this.channel.send(chunks[0]!);
+          for (let i = 1; i < chunks.length; i++) {
+            this.extraMessages.push(await this.channel.send(chunks[i]!));
+          }
+        } else {
+          await this.discordMessage.edit(chunks[0]!);
+          for (let i = 1; i < chunks.length; i++) {
+            const extra = this.extraMessages[i - 1];
+            if (extra) {
+              await extra.edit(chunks[i]!);
+            } else {
+              this.extraMessages.push(await this.channel.send(chunks[i]!));
+            }
+          }
+          // Delete any excess overflow messages if text shrank
+          while (this.extraMessages.length > chunks.length - 1) {
+            const extra = this.extraMessages.pop();
+            try {
+              await extra?.delete();
+            } catch {
+              // ignore
+            }
           }
         }
-        for (const extra of this.extraMessages) {
-          try {
-            await extra.delete();
-          } catch {
-            // ignore
-          }
-        }
-        this.discordMessage = await this.channel.send({
-          content: "📄 Response is long, here's the file:",
-          files: [filePath],
-        });
-        this.extraMessages = [];
-        this.textBuffer = "";
-        return;
-      }
-
-      if (!this.discordMessage) {
-        this.discordMessage = await this.channel.send(chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          this.extraMessages.push(await this.channel.send(chunks[i]));
-        }
-      } else {
-        await this.discordMessage.edit(chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          if (this.extraMessages[i - 1]) {
-            await this.extraMessages[i - 1].edit(chunks[i]);
-          } else {
-            this.extraMessages.push(await this.channel.send(chunks[i]));
-          }
-        }
-        // Delete any excess overflow messages if text shrank
-        while (this.extraMessages.length > chunks.length - 1) {
-          const extra = this.extraMessages.pop();
-          try {
-            await extra?.delete();
-          } catch {
-            // ignore
-          }
-        }
-      }
-    });
+      })
+      .catch((e) => {
+        console.error("flushEdit failed:", e);
+      });
     return this.flushQueue;
+  }
+
+  private writeTempOutput(): string | null {
+    try {
+      const dir = pathJoin(tmpdir(), "kimicord");
+      mkdirSync(dir, { recursive: true });
+      const filePath = pathJoin(dir, `kimi-output-${Date.now()}.md`);
+      writeFileSync(filePath, this.textBuffer);
+      return filePath;
+    } catch (e) {
+      console.error("Failed to write temp output file:", e);
+      return null;
+    }
   }
 
   private async postThinking() {
@@ -248,6 +289,8 @@ export class TurnRenderer {
     if (text.length > 1800) {
       text = text.slice(0, 1800) + "…(truncated)";
     }
+    // Nested || would prematurely close the spoiler
+    text = text.replace(/\|\|/g, "‖");
     await this.channel.send(`||${text}||`);
   }
 
@@ -276,7 +319,9 @@ export class TurnRenderer {
     }
 
     if (name === "Shell" && parsed?.command) {
-      return `⚙️ **Shell**\n\`\`\`bash\n${String(parsed.command).slice(0, 800)}\n\`\`\``;
+      // A command containing ``` would break out of the fence
+      const command = String(parsed.command).slice(0, 800).replace(/```/g, "'''");
+      return `⚙️ **Shell**\n\`\`\`bash\n${command}\n\`\`\``;
     }
 
     if (name === "WriteFile" && parsed?.path) {
@@ -298,7 +343,7 @@ export class TurnRenderer {
     // Generic fallback: code block for multi-line, inline for single-line
     const preview = args.replace(/`/g, "'").slice(0, 400);
     if (args.includes("\n")) {
-      return `⚙️ **${name}**\n\`\`\`json\n${preview}\n\`\`\``;
+      return `⚙️ **${name}**\n\`\`\`json\n${preview.replace(/```/g, "'''")}\n\`\`\``;
     }
     return `⚙️ **${name}**: \`${preview}\``;
   }
@@ -316,6 +361,20 @@ export class TurnRenderer {
       return;
     }
 
+    // SHOW_TOOL_OUTPUT=false hides command output from the thread (the "⚙️"
+    // tool call line itself still shows what ran); failures still surface as a
+    // one-liner so errors aren't silent.
+    if (!CONFIG.showToolOutput) {
+      if (buf && !buf.posted) {
+        await this.flushToolCall(id);
+      }
+      this.pendingToolCalls.delete(id);
+      if (payload.return_value?.is_error) {
+        await this.channel.send("⚠️ Tool call failed (output hidden — set `SHOW_TOOL_OUTPUT=true` to see it)");
+      }
+      return;
+    }
+
     const output = payload.return_value?.output ?? payload.result ?? "";
 
     if (buf && !buf.posted) {
@@ -325,25 +384,26 @@ export class TurnRenderer {
     const lines = output.split("\n");
     let resultText: string;
     if (lines.length <= 1) {
-      resultText = "\`" + output.slice(0, 900) + "\`";
+      // Single-line output may itself contain backticks
+      resultText = "`" + output.slice(0, 900).replace(/`/g, "'") + "`";
     } else {
-      const head = lines.slice(0, 3).join("\n");
+      let head = lines.slice(0, 3).join("\n").replace(/```/g, "'''");
       const more = lines.length - 3;
-      resultText =
-        "\`\`\`\n" +
-        head +
-        (more > 0 ? `\n▾ ${more} more lines` : "") +
-        "\n\`\`\`";
-      if (resultText.length > 900) {
-        resultText = resultText.slice(0, 900) + "…";
+      const suffix = more > 0 ? `\n▾ ${more} more lines` : "";
+      // Truncate the inner content, not the built string, so the closing
+      // fence always survives
+      const budget = 900 - suffix.length;
+      if (head.length > budget) {
+        head = head.slice(0, Math.max(0, budget - 1)) + "…";
       }
+      resultText = "```\n" + head + suffix + "\n```";
     }
     await this.channel.send(resultText);
   }
 
   private buildStatusEmbed(status: string): EmbedBuilder {
     return new EmbedBuilder()
-      .setTitle("🟡 Kimi Session")
+      .setTitle("Kimi Session")
       .addFields(
         { name: "Session", value: this.sessionId.slice(0, 8), inline: true },
         { name: "Mode", value: this.mode, inline: true },
@@ -369,28 +429,93 @@ export class TurnRenderer {
 
   async updateStatus(status: string) {
     if (!CONFIG.showStatusEmbed) return;
+    const now = Date.now();
+    const elapsed = now - this.lastStatusEditAt;
+    if (this.statusMessage && elapsed < STATUS_EDIT_MIN_INTERVAL_MS) {
+      // Throttle rapid edits (StepBegin/StatusUpdate can fire constantly on
+      // long turns); keep the latest status for a trailing update.
+      this.pendingStatus = status;
+      if (!this.statusTimer) {
+        this.statusTimer = setTimeout(() => {
+          this.statusTimer = null;
+          const s = this.pendingStatus ?? "🟢 Ready";
+          this.pendingStatus = null;
+          this.updateStatusNow(s).catch(console.error);
+        }, STATUS_EDIT_MIN_INTERVAL_MS - elapsed);
+      }
+      return;
+    }
+    await this.updateStatusNow(status);
+  }
+
+  private async updateStatusNow(status: string) {
+    this.lastStatusEditAt = Date.now();
+    const embed = this.buildStatusEmbed(status);
     if (!this.statusMessage) {
-      this.statusMessage = await this.channel.send({
-        embeds: [this.buildStatusEmbed(status)],
-      });
-    } else {
-      await this.statusMessage.edit({
-        embeds: [this.buildStatusEmbed(status)],
-      });
+      this.statusMessage = await this.channel.send({ embeds: [embed] });
+      statusMessages.set(this.channel.id, this.statusMessage);
+      return;
+    }
+    try {
+      await this.statusMessage.edit({ embeds: [embed] });
+    } catch {
+      // The old status message was deleted — post a fresh one
+      this.statusMessage = await this.channel.send({ embeds: [embed] });
+      statusMessages.set(this.channel.id, this.statusMessage);
     }
   }
 }
 
 function splitMarkdown(text: string, maxLen: number): string[] {
   const out: string[] = [];
-  // Strip tables first (crude but effective for v1)
-  text = text.replace(/\|[^\n]+\|/g, (m) => m.replace(/\|/g, " "));
+  // Strip tables first (crude but effective for v1) — only on lines that
+  // actually look like table rows, so pipes inside inline code survive.
+  text = text.replace(/^\|.*\|$/gm, (m) => m.replace(/\|/g, " "));
+  let inFence = false;
+  let fenceTag = "```";
   while (text.length > maxLen) {
     let cut = text.lastIndexOf("\n", maxLen);
     if (cut < maxLen * 0.5) cut = maxLen;
-    out.push(text.slice(0, cut));
-    text = text.slice(cut).trimStart();
+    let chunk = text.slice(0, cut);
+    // Track code-fence state across the chunk so we never cut mid-fence
+    for (const line of chunk.split("\n")) {
+      const m = line.match(/^(```[^\s`]*)/);
+      if (m) {
+        if (inFence) {
+          inFence = false;
+        } else {
+          inFence = true;
+          fenceTag = m[1] ?? "```";
+        }
+      }
+    }
+    if (inFence) {
+      // Close the fence in this chunk and re-open it in the next one
+      chunk += "\n```";
+      text = fenceTag + "\n" + text.slice(cut).trimStart();
+    } else {
+      text = text.slice(cut).trimStart();
+    }
+    out.push(chunk);
   }
   if (text) out.push(text);
   return out.length ? out : [""];
+}
+
+// Collapses runs of blank lines outside of code fences; blank lines inside
+// fenced code blocks are preserved as-is.
+function collapseBlankLinesOutsideFences(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^```/.test(line.trimStart())) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    if (!inFence && line.trim() === "") continue;
+    out.push(line);
+  }
+  return out.join("\n");
 }

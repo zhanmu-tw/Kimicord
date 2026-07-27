@@ -7,8 +7,21 @@ import { runTurn } from "../turn.js";
 import { buildErrorEmbed } from "../errors.js";
 
 export async function handleNewPost(thread: ThreadChannel, config: ChannelConfig) {
-  const msg = await thread.fetchStarterMessage().catch(() => null);
-  if (!msg) return;
+  // ThreadCreate can fire before the starter message is fetchable; retry
+  // with a short backoff before giving up.
+  let msg: Message | null = null;
+  for (let attempt = 0; attempt < 3 && !msg; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    msg = await thread.fetchStarterMessage().catch(() => null);
+  }
+  if (!msg) {
+    await thread
+      .send("⚠️ Couldn't load this post's starter message, so no Kimi session was started. Try sending your prompt as a message in this thread.")
+      .catch(() => {});
+    return;
+  }
 
   if (!CONFIG.allowedUserIds.has(msg.author.id)) {
     await thread.send("❌ You are not permitted to start kimi sessions.");
@@ -44,7 +57,7 @@ export async function handleNewPost(thread: ThreadChannel, config: ChannelConfig
 
 export async function handleReply(message: Message) {
   if (!message.channel.isThread() || !CONFIG.allowedUserIds.has(message.author.id)) {
-    await message.react("❌");
+    await message.react("❌").catch(() => {});
     return;
   }
 
@@ -59,8 +72,13 @@ export async function handleReply(message: Message) {
   ensureDequeueHandler(session, thread);
 
   if (session.state === "busy") {
+    // Only react to the first queued message per busy period — reacting to
+    // every queued message hits reaction rate limits when many lines are pasted.
+    const firstQueued = session.messageQueue.length === 0;
     session.messageQueue.push({ text: message.content, context: message });
-    await message.react("⏳");
+    if (firstQueued) {
+      await message.react("⏳").catch(() => {});
+    }
   } else {
     runTurn(session, thread, message.content, message).catch(async (e) => {
       console.error(e);
@@ -88,5 +106,4 @@ function stripMentions(content: string, botId?: string): string {
   const regex = new RegExp(`<@!?${botId}>`, "g");
   return content.replace(regex, "").trim();
 }
-
 
