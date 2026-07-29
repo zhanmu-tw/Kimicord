@@ -202,6 +202,11 @@ export interface AcpContentBlock {
   [key: string]: unknown;
 }
 
+/** Content blocks accepted in a session/prompt payload (subset of ACP). */
+export type AcpPromptContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export interface AcpToolCallContent {
   type: string;
   content?: AcpContentBlock;

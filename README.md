@@ -17,6 +17,7 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 - **Slash commands** — `/new`, `/interrupt`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, `/init`, `/test`
 - **Dashboard** — lightweight HTTP dashboard for live session stats
 - **MCP support** — auto-detects `mcp.json` (configurable via `MCP_CONFIG_PATH`) and passes it to `kimi`
+- **Attachments** — images (≤10 MB) are forwarded as vision input; all attachments (≤25 MB) are saved under `.kimicord/attachments/` in the workspace for the agent to read
 
 ## Quick start
 

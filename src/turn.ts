@@ -3,10 +3,10 @@ import { KimiSession } from "./session.js";
 import { TurnRenderer } from "./renderer.js";
 import { postApproval, postQuestion, postToolCallRequest } from "./approvals.js";
 import { getSessionByThread } from "./db.js";
-import { WireEventMessage, QuestionRequestPayload, ACP_ERROR_AUTH_REQUIRED } from "./wire.js";
+import { WireEventMessage, QuestionRequestPayload, ACP_ERROR_AUTH_REQUIRED, AcpPromptContentBlock } from "./wire.js";
 import { safeErrorReply } from "./errors.js";
 
-export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string, triggerMessage?: Message): Promise<TurnRenderer> {
+export async function runTurn(session: KimiSession, thread: ThreadChannel, text: string, triggerMessage?: Message, extraBlocks?: AcpPromptContentBlock[]): Promise<TurnRenderer> {
   const row = getSessionByThread(thread.id);
   const renderer = new TurnRenderer(
     thread,
@@ -93,7 +93,7 @@ export async function runTurn(session: KimiSession, thread: ThreadChannel, text:
     }
 
     await thread.sendTyping();
-    await session.sendPrompt(text);
+    await session.sendPrompt(text, undefined, extraBlocks);
   } catch (err) {
     // If this turn was dequeued but failed before its prompt was dispatched,
     // free the reserved handoff slot so the session doesn't deadlock.

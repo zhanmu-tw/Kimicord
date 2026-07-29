@@ -19,6 +19,7 @@ import {
   AcpPermissionOption,
   AcpToolCallInfo,
   AcpContentBlock,
+  AcpPromptContentBlock,
   AcpMcpServer,
   JsonRpcError,
   ACP_ERROR_AUTH_REQUIRED,
@@ -45,6 +46,7 @@ export interface PromptResult {
 export interface QueueEntry {
   text: string;
   context?: unknown;
+  extraBlocks?: AcpPromptContentBlock[];
   resolve?: (value: PromptResult) => void;
   reject?: (err: Error) => void;
 }
@@ -630,9 +632,9 @@ export class KimiSession extends EventEmitter {
 
   // ---- Public API (frozen contract) ----
 
-  async sendPrompt(text: string, context?: unknown): Promise<PromptResult> {
+  async sendPrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
     if (this.state === "busy" && !this.handoffPending) {
-      return this.enqueuePrompt(text, context);
+      return this.enqueuePrompt(text, context, extraBlocks);
     }
     // Idle, or the dequeued turn claiming its reserved handoff slot.
     this.handoffPending = false;
@@ -669,7 +671,7 @@ export class KimiSession extends EventEmitter {
           jsonrpc: "2.0",
           id,
           method: "session/prompt",
-          params: { sessionId: acpSessionId, prompt: [{ type: "text", text }] },
+          params: { sessionId: acpSessionId, prompt: [{ type: "text", text }, ...(extraBlocks ?? [])] },
         },
         (err) => {
           if (err) {
@@ -682,11 +684,11 @@ export class KimiSession extends EventEmitter {
     });
   }
 
-  private enqueuePrompt(text: string, context?: unknown): Promise<PromptResult> {
+  private enqueuePrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
     // Queued while busy; the promise settles when the queued prompt eventually
     // runs (or rejects on teardown), instead of never settling.
     return new Promise<PromptResult>((resolve, reject) => {
-      this.messageQueue.push({ text, context, resolve, reject });
+      this.messageQueue.push({ text, context, extraBlocks, resolve, reject });
     });
   }
 
@@ -892,7 +894,7 @@ export class KimiSession extends EventEmitter {
       // Reserve the busy slot across the dequeue → runTurn handoff.
       this.handoffPending = true;
       this.handoffWaiter = next;
-      this.emit("dequeue", { text: next.text, context: next.context });
+      this.emit("dequeue", { text: next.text, context: next.context, extraBlocks: next.extraBlocks });
     } else {
       this.state = "active";
       this.emit("stateChange", this.state);

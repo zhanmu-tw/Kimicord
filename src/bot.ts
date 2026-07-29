@@ -294,8 +294,8 @@ export function attachBotHandlers(client: Client) {
       const { runTurn } = await import("./turn.js");
       const session = SessionManager.getOrCreate(thread.id, sessionId, CONFIG.kimiWorkDir, CONFIG.kimiYolo);
       if (session.listenerCount("dequeue") === 0) {
-        session.on("dequeue", async (item: { text: string; context?: unknown }) => {
-          runTurn(session, thread, item.text).catch(async (e) => {
+        session.on("dequeue", async (item: { text: string; context?: unknown; extraBlocks?: import("./wire.js").AcpPromptContentBlock[] }) => {
+          runTurn(session, thread, item.text, undefined, item.extraBlocks).catch(async (e) => {
             await thread.send({ embeds: [buildErrorEmbed(e)] });
           });
         });
