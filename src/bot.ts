@@ -171,8 +171,9 @@ export function attachBotHandlers(client: Client) {
           await interaction.reply({ content: "This request was already handled.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
+        const label = session.pendingOptionLabel(wireRequestId, value) ?? value;
         session.resolveRequest(wireRequestId, value);
-        await interaction.update({ content: `Selected: ${value}`, components: [] }).catch(() => {});
+        await interaction.update({ content: `Selected: ${label}`, components: [] }).catch(() => {});
         return;
       }
 

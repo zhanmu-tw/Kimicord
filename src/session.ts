@@ -650,6 +650,13 @@ export class KimiSession extends EventEmitter {
     this.writeMessage({ jsonrpc: "2.0", id: rpcId, result: { outcome } });
   }
 
+  /** Human-readable label for a pending permission response (opt<N> → option name), for display. */
+  pendingOptionLabel(wireRequestId: string, response: string): string | null {
+    const acp = this.pendingAcpPermissions.get(wireRequestId);
+    if (!acp || !response.startsWith("opt")) return null;
+    return acp.options[Number(response.slice(3))]?.name ?? null;
+  }
+
   /** Map a consumer's generic response to the ACP optionId stored for this request. */
   private pickOptionId(permission: PendingAcpPermission, response: string): string | null {
     const { options, kind } = permission;
