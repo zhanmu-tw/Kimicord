@@ -185,11 +185,27 @@ export interface AcpInitializeResult {
   agentInfo?: { name?: string; version?: string };
 }
 
+export interface AcpConfigOptionChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+/** A select-type setting the agent exposes (e.g. model, thinking, mode). */
+export interface AcpConfigOption {
+  type: string;
+  id: string;
+  name: string;
+  category?: string;
+  currentValue: string;
+  options: AcpConfigOptionChoice[];
+}
+
 export interface AcpNewSessionResult {
   sessionId: string;
   modes?: unknown;
   models?: unknown;
-  configOptions?: unknown;
+  configOptions?: AcpConfigOption[];
 }
 
 export interface AcpPromptResult {

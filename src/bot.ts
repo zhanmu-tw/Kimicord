@@ -11,6 +11,8 @@ import {
   PermissionFlagsBits,
   ChannelType,
   MessageFlags,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
 } from "discord.js";
 import { CONFIG, sanitizeWorkDir } from "./config.js";
 import { tryMarkResolved } from "./approvals.js";
@@ -48,6 +50,9 @@ export async function registerCommands() {
       .toJSON(),
     new SlashCommandBuilder().setName("clear").setDescription("Clear the kimi context").toJSON(),
     new SlashCommandBuilder().setName("yolo").setDescription("Toggle YOLO mode in kimi").toJSON(),
+    new SlashCommandBuilder().setName("model").setDescription("Choose the kimi model").toJSON(),
+    new SlashCommandBuilder().setName("effort").setDescription("Choose the thinking effort").toJSON(),
+    new SlashCommandBuilder().setName("mode").setDescription("Choose the permission mode").toJSON(),
     new SlashCommandBuilder()
       .setName("plan")
       .setDescription("Toggle or view plan mode in kimi")
@@ -213,6 +218,31 @@ export function attachBotHandlers(client: Client) {
         return;
       }
       const customId = interaction.customId;
+      if (customId.startsWith("config:")) {
+        // config:<threadId>:<configId> — pick a model/thinking/mode value.
+        const [, threadId, configId] = customId.split(":");
+        const selected = interaction.values[0];
+        const session = threadId ? SessionManager.get(threadId) : undefined;
+        if (!session || !configId || !selected) {
+          await interaction.reply({ content: "Session not found.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          return;
+        }
+        try {
+          await session.setConfigOption(configId, selected);
+          const option = session.getConfigOption(configId);
+          const displayName = option?.name ?? configId;
+          const choiceName = option?.options.find((c) => c.value === selected)?.name ?? selected;
+          await interaction.update({ content: `✅ ${displayName} set to **${choiceName}**`, components: [] }).catch(() => {});
+          const thread = interaction.channel;
+          if (thread?.isSendable()) {
+            await thread.send(`⚙️ <@${interaction.user.id}> changed ${displayName} to **${choiceName}**`).catch(() => {});
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await interaction.update({ content: `❌ Sorry, I couldn't change that setting: ${msg}`, components: [] }).catch(() => {});
+        }
+        return;
+      }
       const parts = customId.split(":");
       if (parts.length < 4) return;
       const [type, wireRequestId, threadId, ...rest] = parts;
@@ -523,6 +553,50 @@ export function attachBotHandlers(client: Client) {
       }
 
       await interaction.editReply({ content: `🧪 Test ${testType} sent.` });
+      return;
+    }
+
+    const configCommands: Record<string, { configId: string; placeholder: string }> = {
+      model: { configId: "model", placeholder: "Choose a model..." },
+      effort: { configId: "thinking", placeholder: "Choose a thinking effort..." },
+      mode: { configId: "mode", placeholder: "Choose a permission mode..." },
+    };
+    const configCmd = configCommands[commandName];
+    if (configCmd) {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session here yet — send a message first.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const { configId, placeholder } = configCmd;
+      const option = session.getConfigOption(configId);
+      if (!option || option.options.length === 0) {
+        await interaction.reply({ content: "This session doesn't expose that setting.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`config:${thread.id}:${configId}`)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          option.options.slice(0, 25).map((choice) => ({
+            label: choice.name.slice(0, 100),
+            value: choice.value.slice(0, 100),
+            description: choice.description ? choice.description.slice(0, 100) : undefined,
+            default: choice.value === option.currentValue,
+          }))
+        );
+      const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+      const current = option.options.find((c) => c.value === option.currentValue);
+      await interaction.reply({
+        content: `⚙️ **${option.name}** — current: **${current?.name ?? option.currentValue ?? "?"}**`,
+        components: [row],
+        flags: MessageFlags.Ephemeral,
+      });
       return;
     }
 

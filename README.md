@@ -129,6 +129,9 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 | `/clear`           | Clear the Kimi context                                                  |
 | `/yolo`            | Toggle YOLO mode                                                        |
 | `/plan [mode]`     | Toggle or view plan mode                                                |
+| `/model`           | Choose the Kimi model                                                   |
+| `/effort`          | Choose the thinking effort                                              |
+| `/mode`            | Choose the permission mode                                              |
 | `/add-dir <path>`  | Add a directory to the workspace                                        |
 | `/export`          | Export current context and upload it as a Discord file attachment       |
 | `/init`            | Generate `AGENTS.md` via Kimi                                           |

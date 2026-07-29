@@ -12,6 +12,7 @@ import {
   AcpServerRequest,
   AcpInitializeResult,
   AcpNewSessionResult,
+  AcpConfigOption,
   AcpPromptResult,
   AcpSessionUpdateParams,
   AcpSessionUpdate,
@@ -195,6 +196,10 @@ export class KimiSession extends EventEmitter {
 
   proc: ChildProcess | null = null;
   state: "dormant" | "active" | "busy" = "dormant";
+  // Config options (model/thinking/mode) reported by session/new, refreshed by
+  // config_option_update. Lives on the session object so it survives idle
+  // respawns of the kimi process.
+  configOptions: AcpConfigOption[] = [];
   pendingRequests = new Map<string, PendingRequest>();
   idleTimer: NodeJS.Timeout | null = null;
   pendingQuestion: { wireRequestId: string } | null = null;
@@ -361,6 +366,7 @@ export class KimiSession extends EventEmitter {
           mcpServers: this.mcpServers,
         })) as AcpNewSessionResult;
         acpSessionId = r.sessionId ?? knownAcpId;
+        if (r.configOptions) this.configOptions = r.configOptions;
       } catch (err) {
         if ((err as { code?: number }).code === ACP_ERROR_AUTH_REQUIRED) throw err;
         this.log("session/resume failed, starting a fresh session:", (err as Error).message);
@@ -372,6 +378,7 @@ export class KimiSession extends EventEmitter {
         mcpServers: this.mcpServers,
       })) as AcpNewSessionResult;
       acpSessionId = r.sessionId;
+      if (r.configOptions) this.configOptions = r.configOptions;
       acpSessionMapSet(this.sessionId, acpSessionId);
     }
     this.acpSessionId = acpSessionId;
@@ -526,8 +533,13 @@ export class KimiSession extends EventEmitter {
         }
         break;
       }
+      case "config_option_update": {
+        const opts = update.configOptions as AcpConfigOption[] | undefined;
+        if (Array.isArray(opts)) this.configOptions = opts;
+        break;
+      }
       // plan: renderer currently ignores PlanDisplay — skip.
-      // config_option_update / available_commands_update / user_message_chunk:
+      // available_commands_update / user_message_chunk:
       // nothing to surface to consumers.
       default:
         break;
@@ -631,6 +643,24 @@ export class KimiSession extends EventEmitter {
   }
 
   // ---- Public API (frozen contract) ----
+
+  getConfigOption(id: string): AcpConfigOption | undefined {
+    return this.configOptions.find((o) => o.id === id);
+  }
+
+  /** Change a kimi config option (model/thinking/mode). Does not start a turn. */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.ensureProcess();
+    if (!this.acpSessionId) {
+      throw new Error("kimi acp session is not initialized");
+    }
+    const result = (await this.rpc("session/set_config_option", {
+      sessionId: this.acpSessionId,
+      configId,
+      value,
+    })) as { configOptions?: AcpConfigOption[] };
+    if (Array.isArray(result?.configOptions)) this.configOptions = result.configOptions;
+  }
 
   async sendPrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
     if (this.state === "busy" && !this.handoffPending) {
