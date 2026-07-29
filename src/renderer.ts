@@ -38,6 +38,10 @@ export class TurnRenderer {
   private editTimer: NodeJS.Timeout | null = null;
   private discordMessage: Message | null = null;
   private extraMessages: Message[] = [];
+  // Offset into textBuffer of content already shown in earlier (sealed)
+  // messages; a tool call seals the current text message so the turn's text
+  // continues in a fresh message below it.
+  private sealedTextLength = 0;
   private toolMessages = new Map<string, Message>();
   private pendingToolCalls = new Map<
     string,
@@ -211,22 +215,28 @@ export class TurnRenderer {
         if (!this.textBuffer) return;
         this.lastEditAt = Date.now();
 
+        // Text up to sealedTextLength already lives in earlier (sealed)
+        // messages; only the tail renders into the current one. Stripping
+        // must leave the sealed head alone or the offset would drift.
+        const head = this.textBuffer.slice(0, this.sealedTextLength);
         // Strip raw QuestionResponse JSON that Kimi echoes back after answers
-        this.textBuffer = this.textBuffer
+        let tail = this.textBuffer
+          .slice(this.sealedTextLength)
           .replace(/```(?:json)?\s*\n?\{\s*"answers"\s*:[\s\S]*?\}\s*\n?```/g, "")
           .replace(/\{\s*"answers"\s*:\s*\{[\s\S]*?\}\s*\}\s*/g, "")
           .trimStart();
         // Strip export confirmation text; the /export command uploads the file directly
-        this.textBuffer = this.textBuffer
+        tail = tail
           .replace(
             /Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi,
             "",
           )
           .trimStart();
-        this.textBuffer = collapseBlankLinesOutsideFences(this.textBuffer).trimStart();
-        if (!this.textBuffer) return;
+        tail = collapseBlankLinesOutsideFences(tail).trimStart();
+        this.textBuffer = head + tail;
+        if (!tail) return;
 
-        const chunks = splitMarkdown(this.textBuffer, 1900);
+        const chunks = splitMarkdown(tail, 1900);
 
         // If the final response is huge, replace it with a file attachment
         if (this.finished && chunks.length > 3) {
@@ -328,11 +338,24 @@ export class TurnRenderer {
 
     // Skip raw tool call text for tools that are better summarized by Kimi
     // in its natural response, or handled via interactive UI.
-    if (buf.name === "AskUserQuestion" || buf.name === "ReadFile") return;
+    if (buf.name === "AskUserQuestion" || buf.name === "Read" || buf.name === "ReadFile") return;
+
+    // Split the turn's text at tool boundaries: seal the current text message
+    // so subsequent text starts a fresh message below this tool call, instead
+    // of the final reply landing as an edit far up the thread.
+    await this.sealTextMessage();
 
     let text = this.formatToolCallText(buf.name, buf.args.trim());
     const msg = await this.channel.send(text);
     this.toolMessages.set(toolCallId, msg);
+  }
+
+  private async sealTextMessage() {
+    if (!this.discordMessage) return;
+    await this.flushEdit();
+    this.sealedTextLength = this.textBuffer.length;
+    this.discordMessage = null;
+    this.extraMessages = [];
   }
 
   private formatToolCallText(name: string, args: string): string {
@@ -345,22 +368,24 @@ export class TurnRenderer {
       // fall back to raw preview
     }
 
-    if (name === "Shell" && parsed?.command) {
+    // ACP sends real tool names (Bash, Write, Edit, Read); the legacy wire
+    // mode sent Shell/WriteFile/StrReplaceFile/ReadFile. Handle both.
+    if ((name === "Bash" || name === "Shell") && parsed?.command) {
       // A command containing ``` would break out of the fence
       const command = String(parsed.command).slice(0, 800).replace(/```/g, "'''");
-      return `⚙️ **Shell**\n\`\`\`bash\n${command}\n\`\`\``;
+      return `⚙️ **${name}**\n\`\`\`bash\n${command}\n\`\`\``;
     }
 
-    if (name === "WriteFile" && parsed?.path) {
-      return `⚙️ **WriteFile**: \`${String(parsed.path)}\``;
+    if ((name === "Write" || name === "WriteFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
-    if (name === "StrReplaceFile" && parsed?.path) {
-      return `⚙️ **StrReplaceFile**: \`${String(parsed.path)}\``;
+    if ((name === "Edit" || name === "StrReplaceFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
-    if (name === "ReadFile" && parsed?.path) {
-      return `⚙️ **ReadFile**: \`${String(parsed.path)}\``;
+    if ((name === "Read" || name === "ReadFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
     if (name === "Glob" && parsed?.pattern) {
@@ -383,7 +408,7 @@ export class TurnRenderer {
 
     // Skip rendering raw tool results that are better left for Kimi to summarize
     // in its natural ContentPart response, rather than dumping huge raw output.
-    if (buf?.name === "AskUserQuestion" || buf?.name === "ReadFile") {
+    if (buf?.name === "AskUserQuestion" || buf?.name === "Read" || buf?.name === "ReadFile") {
       this.pendingToolCalls.delete(id);
       return;
     }
