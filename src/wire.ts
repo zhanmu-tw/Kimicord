@@ -39,6 +39,8 @@ export interface ToolCallPayload {
 }
 
 export interface ToolCallPartPayload {
+  /** Set when the part targets a known call (e.g. rawInput from a terminal ACP update). */
+  tool_call_id?: string;
   arguments_part: string;
 }
 
@@ -65,6 +67,10 @@ export interface TurnEndPayload {
   // empty
 }
 
+export interface PlanDisplayPayload {
+  entries: { content: string; status: string; priority?: string }[];
+}
+
 export interface StatusUpdatePayload {
   context_usage: number;
   context_tokens: number;
@@ -84,6 +90,7 @@ export interface ApprovalRequestPayload {
   action: string;
   description?: string;
   command?: unknown;
+  options?: { id: string; label: string; kind?: string }[];
 }
 
 export interface QuestionOption {
@@ -182,11 +189,34 @@ export interface AcpInitializeResult {
   agentInfo?: { name?: string; version?: string };
 }
 
+export interface AcpConfigOptionChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+/** A select-type setting the agent exposes (e.g. model, thinking, mode). */
+export interface AcpConfigOption {
+  type: string;
+  id: string;
+  name: string;
+  category?: string;
+  currentValue: string;
+  options: AcpConfigOptionChoice[];
+}
+
+/** A slash command or skill the agent offers, from available_commands_update. */
+export interface AcpAvailableCommand {
+  name: string;
+  description?: string;
+  input?: { hint?: string };
+}
+
 export interface AcpNewSessionResult {
   sessionId: string;
   modes?: unknown;
   models?: unknown;
-  configOptions?: unknown;
+  configOptions?: AcpConfigOption[];
 }
 
 export interface AcpPromptResult {
@@ -198,6 +228,11 @@ export interface AcpContentBlock {
   text?: string;
   [key: string]: unknown;
 }
+
+/** Content blocks accepted in a session/prompt payload (subset of ACP). */
+export type AcpPromptContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
 
 export interface AcpToolCallContent {
   type: string;

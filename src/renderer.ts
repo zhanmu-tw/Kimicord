@@ -11,10 +11,12 @@ import {
   ContentPartTextPayload,
   ContentPartThinkPayload,
   ToolCallPayload,
+  ToolCallPartPayload,
   ToolResultPayload,
   StepBeginPayload,
   StatusUpdatePayload,
   TurnEndPayload,
+  PlanDisplayPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
 import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
@@ -36,6 +38,10 @@ export class TurnRenderer {
   private editTimer: NodeJS.Timeout | null = null;
   private discordMessage: Message | null = null;
   private extraMessages: Message[] = [];
+  // Offset into textBuffer of content already shown in earlier (sealed)
+  // messages; a tool call seals the current text message so the turn's text
+  // continues in a fresh message below it.
+  private sealedTextLength = 0;
   private toolMessages = new Map<string, Message>();
   private pendingToolCalls = new Map<
     string,
@@ -46,6 +52,10 @@ export class TurnRenderer {
   private lastStatusEditAt = 0;
   private statusTimer: NodeJS.Timeout | null = null;
   private pendingStatus: string | null = null;
+  private planMessage: Message | null = null;
+  private planEntries: PlanDisplayPayload["entries"] | null = null;
+  private lastPlanEditAt = 0;
+  private planTimer: NodeJS.Timeout | null = null;
   private stepCount = 0;
   private contextUsage = 0;
   private finished = false;
@@ -105,14 +115,18 @@ export class TurnRenderer {
         break;
       }
       case "ToolCallPart": {
-        const p = event.params.payload as { arguments_part: string };
-        if (this.lastToolCallId) {
-          const buf = this.pendingToolCalls.get(this.lastToolCallId);
-          if (buf) {
-            buf.args += p.arguments_part;
+        const p = event.params.payload as ToolCallPartPayload;
+        const id = p.tool_call_id ?? this.lastToolCallId;
+        if (id) {
+          const buf = this.pendingToolCalls.get(id);
+          if (buf && !buf.posted) {
+            // Parts from the ACP bridge are full rawInput snapshots, so fill
+            // an empty buffer rather than appending a duplicate; legacy
+            // streaming deltas still append.
+            buf.args = buf.args.trim() ? buf.args + p.arguments_part : p.arguments_part;
             // Post once we have a complete-looking JSON object
-            if (!buf.posted && buf.args.trim().endsWith("}")) {
-              this.flushToolCall(this.lastToolCallId).catch(console.error);
+            if (buf.args.trim().endsWith("}")) {
+              this.flushToolCall(id).catch(console.error);
             }
           }
         }
@@ -139,9 +153,26 @@ export class TurnRenderer {
         }
         break;
       }
+      case "PlanDisplay": {
+        const p = event.params.payload as PlanDisplayPayload;
+        this.planEntries = Array.isArray(p.entries) ? p.entries : [];
+        if (this.planEntries.length === 0) {
+          this.deletePlanMessage().catch(console.error);
+        } else {
+          this.updatePlan().catch(console.error);
+        }
+        break;
+      }
       case "TurnEnd": {
         this.finished = true;
         this.flushEdit().catch(console.error);
+        // Flush any throttled plan update so the final state lands; the
+        // message itself stays in the thread.
+        if (this.planTimer) {
+          clearTimeout(this.planTimer);
+          this.planTimer = null;
+          this.updatePlanNow().catch(console.error);
+        }
         if (CONFIG.showThinking) {
           this.postThinking().catch(console.error);
         }
@@ -151,7 +182,7 @@ export class TurnRenderer {
         break;
       }
       // Silently ignore: TurnBegin, StepInterrupted, CompactionBegin, CompactionEnd,
-      // SubagentEvent, ApprovalResponse, HookTriggered, HookResolved, PlanDisplay
+      // SubagentEvent, ApprovalResponse, HookTriggered, HookResolved
     }
   }
 
@@ -184,22 +215,28 @@ export class TurnRenderer {
         if (!this.textBuffer) return;
         this.lastEditAt = Date.now();
 
+        // Text up to sealedTextLength already lives in earlier (sealed)
+        // messages; only the tail renders into the current one. Stripping
+        // must leave the sealed head alone or the offset would drift.
+        const head = this.textBuffer.slice(0, this.sealedTextLength);
         // Strip raw QuestionResponse JSON that Kimi echoes back after answers
-        this.textBuffer = this.textBuffer
+        let tail = this.textBuffer
+          .slice(this.sealedTextLength)
           .replace(/```(?:json)?\s*\n?\{\s*"answers"\s*:[\s\S]*?\}\s*\n?```/g, "")
           .replace(/\{\s*"answers"\s*:\s*\{[\s\S]*?\}\s*\}\s*/g, "")
           .trimStart();
         // Strip export confirmation text; the /export command uploads the file directly
-        this.textBuffer = this.textBuffer
+        tail = tail
           .replace(
             /Exported\s+\d+\s+messages?\s+to\s+\S+\.md[\s\S]*?Note:[\s\S]*?The exported file may contain sensitive information\.[\s\S]*?Please be cautious when sharing it externally\./gi,
             "",
           )
           .trimStart();
-        this.textBuffer = collapseBlankLinesOutsideFences(this.textBuffer).trimStart();
-        if (!this.textBuffer) return;
+        tail = collapseBlankLinesOutsideFences(tail).trimStart();
+        this.textBuffer = head + tail;
+        if (!tail) return;
 
-        const chunks = splitMarkdown(this.textBuffer, 1900);
+        const chunks = splitMarkdown(tail, 1900);
 
         // If the final response is huge, replace it with a file attachment
         if (this.finished && chunks.length > 3) {
@@ -301,11 +338,24 @@ export class TurnRenderer {
 
     // Skip raw tool call text for tools that are better summarized by Kimi
     // in its natural response, or handled via interactive UI.
-    if (buf.name === "AskUserQuestion" || buf.name === "ReadFile") return;
+    if (buf.name === "AskUserQuestion" || buf.name === "Read" || buf.name === "ReadFile") return;
+
+    // Split the turn's text at tool boundaries: seal the current text message
+    // so subsequent text starts a fresh message below this tool call, instead
+    // of the final reply landing as an edit far up the thread.
+    await this.sealTextMessage();
 
     let text = this.formatToolCallText(buf.name, buf.args.trim());
     const msg = await this.channel.send(text);
     this.toolMessages.set(toolCallId, msg);
+  }
+
+  private async sealTextMessage() {
+    if (!this.discordMessage) return;
+    await this.flushEdit();
+    this.sealedTextLength = this.textBuffer.length;
+    this.discordMessage = null;
+    this.extraMessages = [];
   }
 
   private formatToolCallText(name: string, args: string): string {
@@ -318,22 +368,24 @@ export class TurnRenderer {
       // fall back to raw preview
     }
 
-    if (name === "Shell" && parsed?.command) {
+    // ACP sends real tool names (Bash, Write, Edit, Read); the legacy wire
+    // mode sent Shell/WriteFile/StrReplaceFile/ReadFile. Handle both.
+    if ((name === "Bash" || name === "Shell") && parsed?.command) {
       // A command containing ``` would break out of the fence
       const command = String(parsed.command).slice(0, 800).replace(/```/g, "'''");
-      return `⚙️ **Shell**\n\`\`\`bash\n${command}\n\`\`\``;
+      return `⚙️ **${name}**\n\`\`\`bash\n${command}\n\`\`\``;
     }
 
-    if (name === "WriteFile" && parsed?.path) {
-      return `⚙️ **WriteFile**: \`${String(parsed.path)}\``;
+    if ((name === "Write" || name === "WriteFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
-    if (name === "StrReplaceFile" && parsed?.path) {
-      return `⚙️ **StrReplaceFile**: \`${String(parsed.path)}\``;
+    if ((name === "Edit" || name === "StrReplaceFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
-    if (name === "ReadFile" && parsed?.path) {
-      return `⚙️ **ReadFile**: \`${String(parsed.path)}\``;
+    if ((name === "Read" || name === "ReadFile") && parsed?.path) {
+      return `⚙️ **${name}**: \`${String(parsed.path)}\``;
     }
 
     if (name === "Glob" && parsed?.pattern) {
@@ -356,21 +408,27 @@ export class TurnRenderer {
 
     // Skip rendering raw tool results that are better left for Kimi to summarize
     // in its natural ContentPart response, rather than dumping huge raw output.
-    if (buf?.name === "AskUserQuestion" || buf?.name === "ReadFile") {
+    if (buf?.name === "AskUserQuestion" || buf?.name === "Read" || buf?.name === "ReadFile") {
       this.pendingToolCalls.delete(id);
       return;
     }
 
     // SHOW_TOOL_OUTPUT=false hides command output from the thread (the "⚙️"
     // tool call line itself still shows what ran); failures still surface as a
-    // one-liner so errors aren't silent.
+    // bounded snippet so errors aren't silent but can't flood the thread.
     if (!CONFIG.showToolOutput) {
       if (buf && !buf.posted) {
         await this.flushToolCall(id);
       }
       this.pendingToolCalls.delete(id);
       if (payload.return_value?.is_error) {
-        await this.channel.send("⚠️ Tool call failed (output hidden — set `SHOW_TOOL_OUTPUT=true` to see it)");
+        const reason = (payload.return_value.output ?? "").trim();
+        if (reason) {
+          const snippet = reason.replace(/```/g, "'''").slice(0, 400);
+          await this.channel.send(`⚠️ Tool call failed\n\`\`\`\n${snippet}\n\`\`\``);
+        } else {
+          await this.channel.send("⚠️ Tool call failed (no error output)");
+        }
       }
       return;
     }
@@ -410,12 +468,6 @@ export class TurnRenderer {
         { name: "Trigger", value: this.trigger, inline: true },
         { name: "Working dir", value: this.workDir, inline: false },
         { name: "YOLO", value: String(this.yolo), inline: true },
-        { name: "Step", value: String(this.stepCount), inline: true },
-        {
-          name: "Context",
-          value: `${(this.contextUsage * 100).toFixed(1)}%`,
-          inline: true,
-        },
         { name: "Status", value: status, inline: false },
       )
       .setColor(
@@ -464,6 +516,79 @@ export class TurnRenderer {
       statusMessages.set(this.channel.id, this.statusMessage);
     }
   }
+
+  private async updatePlan() {
+    if (!this.planEntries?.length) return;
+    const now = Date.now();
+    const elapsed = now - this.lastPlanEditAt;
+    if (this.planMessage && elapsed < STATUS_EDIT_MIN_INTERVAL_MS) {
+      // Throttle rapid edits like the status embed; the timer is trailing-edge
+      // so the final plan state always lands.
+      if (!this.planTimer) {
+        this.planTimer = setTimeout(() => {
+          this.planTimer = null;
+          this.updatePlanNow().catch(console.error);
+        }, STATUS_EDIT_MIN_INTERVAL_MS - elapsed);
+      }
+      return;
+    }
+    await this.updatePlanNow();
+  }
+
+  private async updatePlanNow() {
+    const entries = this.planEntries;
+    if (!entries?.length) return;
+    this.lastPlanEditAt = Date.now();
+    const content = "📋 **Plan**\n" + formatPlan(entries);
+    if (!this.planMessage) {
+      this.planMessage = await this.channel.send(content);
+      return;
+    }
+    try {
+      await this.planMessage.edit(content);
+    } catch {
+      // The old plan message was deleted — post a fresh one
+      this.planMessage = await this.channel.send(content);
+    }
+  }
+
+  private async deletePlanMessage() {
+    if (this.planTimer) {
+      clearTimeout(this.planTimer);
+      this.planTimer = null;
+    }
+    const msg = this.planMessage;
+    this.planMessage = null;
+    if (msg) {
+      try {
+        await msg.delete();
+      } catch {
+        // ignore — message may already be gone
+      }
+    }
+  }
+}
+
+// Renders plan entries as a checklist, capping the body so the message
+// (including the "📋 **Plan**" prefix) stays under Discord's 2000-char limit.
+function formatPlan(entries: PlanDisplayPayload["entries"]): string {
+  let body = "";
+  let shown = 0;
+  for (const entry of entries) {
+    const icon =
+      entry.status === "completed" ? "✅" : entry.status === "in_progress" ? "🔄" : "⬜";
+    let text = (entry.content ?? "").replace(/\s+/g, " ").trim();
+    if (text.length > 120) text = text.slice(0, 119) + "…";
+    const line = `${icon} ${text}`;
+    // Leave headroom for a possible "…and N more" footer
+    if (body.length + line.length + 40 > 1900) break;
+    body += (body ? "\n" : "") + line;
+    shown++;
+  }
+  if (shown < entries.length) {
+    body += `\n…and ${entries.length - shown} more`;
+  }
+  return body;
 }
 
 function splitMarkdown(text: string, maxLen: number): string[] {

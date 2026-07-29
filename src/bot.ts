@@ -11,6 +11,8 @@ import {
   PermissionFlagsBits,
   ChannelType,
   MessageFlags,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
 } from "discord.js";
 import { CONFIG, sanitizeWorkDir } from "./config.js";
 import { tryMarkResolved } from "./approvals.js";
@@ -35,6 +37,7 @@ export async function registerCommands() {
     new SlashCommandBuilder().setName("interrupt").setDescription("Interrupt the current turn without killing the session").toJSON(),
     new SlashCommandBuilder().setName("stop").setDescription("Cancel the current turn and kill the session").toJSON(),
     new SlashCommandBuilder().setName("status").setDescription("Show session info").toJSON(),
+    new SlashCommandBuilder().setName("commands").setDescription("List the commands this kimi session offers").toJSON(),
     new SlashCommandBuilder()
       .setName("workdir")
       .setDescription("Set working directory for the next session in this thread")
@@ -48,17 +51,15 @@ export async function registerCommands() {
       .toJSON(),
     new SlashCommandBuilder().setName("clear").setDescription("Clear the kimi context").toJSON(),
     new SlashCommandBuilder().setName("yolo").setDescription("Toggle YOLO mode in kimi").toJSON(),
+    new SlashCommandBuilder().setName("model").setDescription("Choose the kimi model").toJSON(),
+    new SlashCommandBuilder().setName("effort").setDescription("Choose the thinking effort").toJSON(),
+    new SlashCommandBuilder().setName("mode").setDescription("Choose the permission mode").toJSON(),
     new SlashCommandBuilder()
       .setName("plan")
       .setDescription("Toggle or view plan mode in kimi")
       .addStringOption((opt) =>
-        opt.setName("mode").setDescription("on, off, view, or clear").setRequired(false)
+        opt.setName("mode").setDescription("on, off, or view").setRequired(false)
       )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("add-dir")
-      .setDescription("Add a directory to the kimi workspace")
-      .addStringOption((opt) => opt.setName("path").setDescription("Directory path").setRequired(true))
       .toJSON(),
     new SlashCommandBuilder().setName("export").setDescription("Export current kimi context and upload it as a file").toJSON(),
     new SlashCommandBuilder().setName("init").setDescription("Generate AGENTS.md via kimi").toJSON(),
@@ -102,7 +103,9 @@ export async function registerCommands() {
 export function attachBotHandlers(client: Client) {
   client.on(Events.MessageCreate, async (message: Message) => {
     try {
-      if (message.author.bot) return;
+      // System messages (pins, boosts, joins) are authored by users but
+      // carry no prompt content
+      if (message.author.bot || message.system) return;
       if (message.guildId && !client.guilds.cache.has(message.guildId)) return;
 
       // Determine effective channel id
@@ -168,8 +171,9 @@ export function attachBotHandlers(client: Client) {
           await interaction.reply({ content: "This request was already handled.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
+        const label = session.pendingOptionLabel(wireRequestId, value) ?? value;
         session.resolveRequest(wireRequestId, value);
-        await interaction.update({ content: `Selected: ${value}`, components: [] }).catch(() => {});
+        await interaction.update({ content: `Selected: ${label}`, components: [] }).catch(() => {});
         return;
       }
 
@@ -211,6 +215,31 @@ export function attachBotHandlers(client: Client) {
         return;
       }
       const customId = interaction.customId;
+      if (customId.startsWith("config:")) {
+        // config:<threadId>:<configId> — pick a model/thinking/mode value.
+        const [, threadId, configId] = customId.split(":");
+        const selected = interaction.values[0];
+        const session = threadId ? SessionManager.get(threadId) : undefined;
+        if (!session || !configId || !selected) {
+          await interaction.reply({ content: "Session not found.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          return;
+        }
+        try {
+          await session.setConfigOption(configId, selected);
+          const option = session.getConfigOption(configId);
+          const displayName = option?.name ?? configId;
+          const choiceName = option?.options.find((c) => c.value === selected)?.name ?? selected;
+          await interaction.update({ content: `✅ ${displayName} set to **${choiceName}**`, components: [] }).catch(() => {});
+          const thread = interaction.channel;
+          if (thread?.isSendable()) {
+            await thread.send(`⚙️ <@${interaction.user.id}> changed ${displayName} to **${choiceName}**`).catch(() => {});
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await interaction.update({ content: `❌ Sorry, I couldn't change that setting: ${msg}`, components: [] }).catch(() => {});
+        }
+        return;
+      }
       const parts = customId.split(":");
       if (parts.length < 4) return;
       const [type, wireRequestId, threadId, ...rest] = parts;
@@ -292,8 +321,8 @@ export function attachBotHandlers(client: Client) {
       const { runTurn } = await import("./turn.js");
       const session = SessionManager.getOrCreate(thread.id, sessionId, CONFIG.kimiWorkDir, CONFIG.kimiYolo);
       if (session.listenerCount("dequeue") === 0) {
-        session.on("dequeue", async (item: { text: string; context?: unknown }) => {
-          runTurn(session, thread, item.text).catch(async (e) => {
+        session.on("dequeue", async (item: { text: string; context?: unknown; extraBlocks?: import("./wire.js").AcpPromptContentBlock[] }) => {
+          runTurn(session, thread, item.text, undefined, item.extraBlocks).catch(async (e) => {
             await thread.send({ embeds: [buildErrorEmbed(e)] });
           });
         });
@@ -370,6 +399,43 @@ export function attachBotHandlers(client: Client) {
         )
         .setColor(0x3b82f6);
       await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (commandName === "commands") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No active session here.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!session.availableCommands.length) {
+        await interaction.reply({
+          content: "No command list reported yet — the session may not have started. Send a message first.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const lines = session.availableCommands.map((c) => {
+        const hint = c.input?.hint ? ` \`${c.input.hint}\`` : "";
+        return `**/${c.name}**${hint}${c.description ? ` — ${c.description}` : ""}`;
+      });
+      // Truncate at a line boundary; footer reports what was dropped.
+      let content = "";
+      let shown = 0;
+      for (const line of lines) {
+        const remaining = lines.length - shown - 1;
+        const footer = remaining > 0 ? `\n…and ${remaining} more` : "";
+        if (content.length + line.length + 1 + footer.length > 1900) break;
+        content += (content ? "\n" : "") + line;
+        shown++;
+      }
+      if (shown < lines.length) content += `\n…and ${lines.length - shown} more`;
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -524,8 +590,53 @@ export function attachBotHandlers(client: Client) {
       return;
     }
 
-    const proxyCommands = ["compact", "clear", "yolo", "plan", "add-dir", "init"];
-    if (proxyCommands.includes(commandName)) {
+    const configCommands: Record<string, { configId: string; placeholder: string }> = {
+      model: { configId: "model", placeholder: "Choose a model..." },
+      effort: { configId: "thinking", placeholder: "Choose a thinking effort..." },
+      mode: { configId: "mode", placeholder: "Choose a permission mode..." },
+    };
+    const configCmd = configCommands[commandName];
+    if (configCmd) {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session here yet — send a message first.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const { configId, placeholder } = configCmd;
+      const option = session.getConfigOption(configId);
+      if (!option || option.options.length === 0) {
+        await interaction.reply({ content: "This session doesn't expose that setting.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`config:${thread.id}:${configId}`)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          option.options.slice(0, 25).map((choice) => ({
+            label: choice.name.slice(0, 100),
+            value: choice.value.slice(0, 100),
+            description: choice.description ? choice.description.slice(0, 100) : undefined,
+            default: choice.value === option.currentValue,
+          }))
+        );
+      const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+      const current = option.options.find((c) => c.value === option.currentValue);
+      await interaction.reply({
+        content: `⚙️ **${option.name}** — current: **${current?.name ?? option.currentValue ?? "?"}**`,
+        components: [row],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // kimi's ACP layer only intercepts a fixed command set in prompt text, so
+    // only /compact can be proxied; the rest are handled bot-side below.
+    if (commandName === "compact") {
       if (!channel || !(channel instanceof ThreadChannel)) {
         await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
@@ -536,29 +647,113 @@ export function attachBotHandlers(client: Client) {
         await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
-      let prompt = "/" + commandName;
-      if (commandName === "compact") {
-        const focus = interaction.options.getString("focus");
-        if (focus) prompt += ` ${focus}`;
-      }
-      if (commandName === "plan") {
-        const mode = interaction.options.getString("mode");
-        if (mode) prompt += ` ${mode}`;
-      }
-      if (commandName === "add-dir") {
-        const p = interaction.options.getString("path", true);
-        try {
-          const sanitized = sanitizeWorkDir(p);
-          prompt += ` ${sanitized}`;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          await interaction.reply({ content: `❌ Invalid path: ${msg}`, flags: MessageFlags.Ephemeral });
-          return;
-        }
-      }
+      let prompt = "/compact";
+      const focus = interaction.options.getString("focus");
+      if (focus) prompt += ` ${focus}`;
       await interaction.reply({ content: `➡️ Sending \`${prompt}\` to kimi…`, flags: MessageFlags.Ephemeral });
       const { runTurn } = await import("./turn.js");
       runTurn(session, thread, prompt).catch(async (e) => {
+        await thread.send({ embeds: [buildErrorEmbed(e)] });
+      });
+      return;
+    }
+
+    // /plan and /yolo switch the ACP "mode" config option directly.
+    if (commandName === "plan" || commandName === "yolo") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const option = session.getConfigOption("mode");
+      if (!option || option.options.length === 0) {
+        await interaction.reply({ content: "This session doesn't expose mode switching.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const arg = commandName === "plan" ? interaction.options.getString("mode") : null;
+      if (arg === "view") {
+        const current = option.options.find((c) => c.value === option.currentValue);
+        await interaction.reply({
+          content: `⚙️ Current mode: **${current?.name ?? option.currentValue ?? "?"}**`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      let target: string;
+      if (commandName === "yolo") {
+        target = option.currentValue === "yolo" ? "default" : "yolo";
+      } else if (arg === "on") {
+        target = "plan";
+      } else if (arg === "off") {
+        target = "default";
+      } else {
+        target = option.currentValue === "plan" ? "default" : "plan";
+      }
+      try {
+        await session.setConfigOption("mode", target);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await interaction.reply({ content: `❌ Sorry, I couldn't change the mode: ${msg}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (commandName === "yolo") {
+        const enabled = target === "yolo";
+        await interaction.reply({ content: `✅ ${enabled ? "Enabled" : "Disabled"} **YOLO** mode`, flags: MessageFlags.Ephemeral });
+        await thread.send(`⚙️ <@${interaction.user.id}> ${enabled ? "enabled" : "disabled"} **YOLO** mode`).catch(() => {});
+      } else {
+        const modeName = target === "plan" ? "Plan" : "Default";
+        await interaction.reply({ content: `✅ Switched to **${modeName}** mode`, flags: MessageFlags.Ephemeral });
+        await thread.send(`⚙️ <@${interaction.user.id}> switched to **${modeName}** mode`).catch(() => {});
+      }
+      return;
+    }
+
+    // /clear drops the ACP session so the next message starts a fresh one.
+    if (commandName === "clear") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await session.resetContext();
+      await interaction.reply({
+        content: "🧹 Context cleared — the next message in this thread starts a fresh session.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // /init has no ACP command; ask for AGENTS.md in natural language instead.
+    if (commandName === "init") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.reply({ content: "➡️ Asking kimi to generate AGENTS.md…", flags: MessageFlags.Ephemeral });
+      const { runTurn } = await import("./turn.js");
+      runTurn(
+        session,
+        thread,
+        "Explore this project and create an AGENTS.md file at the root of the working directory. " +
+          "Capture how to build, test, and run it, the project structure, and any conventions a coding agent should follow. " +
+          "Keep it concise."
+      ).catch(async (e) => {
         await thread.send({ embeds: [buildErrorEmbed(e)] });
       });
       return;

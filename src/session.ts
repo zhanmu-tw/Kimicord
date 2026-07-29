@@ -12,6 +12,8 @@ import {
   AcpServerRequest,
   AcpInitializeResult,
   AcpNewSessionResult,
+  AcpConfigOption,
+  AcpAvailableCommand,
   AcpPromptResult,
   AcpSessionUpdateParams,
   AcpSessionUpdate,
@@ -19,6 +21,7 @@ import {
   AcpPermissionOption,
   AcpToolCallInfo,
   AcpContentBlock,
+  AcpPromptContentBlock,
   AcpMcpServer,
   JsonRpcError,
   ACP_ERROR_AUTH_REQUIRED,
@@ -45,6 +48,7 @@ export interface PromptResult {
 export interface QueueEntry {
   text: string;
   context?: unknown;
+  extraBlocks?: AcpPromptContentBlock[];
   resolve?: (value: PromptResult) => void;
   reject?: (err: Error) => void;
 }
@@ -77,6 +81,16 @@ function getAcpSessionMap(): Map<string, string> {
 
 function acpSessionMapSet(botSessionId: string, acpSessionId: string): void {
   getAcpSessionMap().set(botSessionId, acpSessionId);
+  try {
+    mkdirSync(path.dirname(ACP_SESSION_MAP_PATH), { recursive: true });
+    writeFileSync(ACP_SESSION_MAP_PATH, JSON.stringify(Object.fromEntries(getAcpSessionMap()), null, 2));
+  } catch (err) {
+    console.warn("Failed to persist ACP session map:", err);
+  }
+}
+
+function acpSessionMapDelete(botSessionId: string): void {
+  if (!getAcpSessionMap().delete(botSessionId)) return;
   try {
     mkdirSync(path.dirname(ACP_SESSION_MAP_PATH), { recursive: true });
     writeFileSync(ACP_SESSION_MAP_PATH, JSON.stringify(Object.fromEntries(getAcpSessionMap()), null, 2));
@@ -193,6 +207,13 @@ export class KimiSession extends EventEmitter {
 
   proc: ChildProcess | null = null;
   state: "dormant" | "active" | "busy" = "dormant";
+  // Config options (model/thinking/mode) reported by session/new, refreshed by
+  // config_option_update. Lives on the session object so it survives idle
+  // respawns of the kimi process.
+  configOptions: AcpConfigOption[] = [];
+  // Slash commands and skills the session offers, from available_commands_update
+  // (sent right after session/new). Surfaced via the /commands Discord command.
+  availableCommands: AcpAvailableCommand[] = [];
   pendingRequests = new Map<string, PendingRequest>();
   idleTimer: NodeJS.Timeout | null = null;
   pendingQuestion: { wireRequestId: string } | null = null;
@@ -359,6 +380,7 @@ export class KimiSession extends EventEmitter {
           mcpServers: this.mcpServers,
         })) as AcpNewSessionResult;
         acpSessionId = r.sessionId ?? knownAcpId;
+        if (r.configOptions) this.configOptions = r.configOptions;
       } catch (err) {
         if ((err as { code?: number }).code === ACP_ERROR_AUTH_REQUIRED) throw err;
         this.log("session/resume failed, starting a fresh session:", (err as Error).message);
@@ -370,6 +392,7 @@ export class KimiSession extends EventEmitter {
         mcpServers: this.mcpServers,
       })) as AcpNewSessionResult;
       acpSessionId = r.sessionId;
+      if (r.configOptions) this.configOptions = r.configOptions;
       acpSessionMapSet(this.sessionId, acpSessionId);
     }
     this.acpSessionId = acpSessionId;
@@ -503,6 +526,15 @@ export class KimiSession extends EventEmitter {
       case "tool_call_update": {
         const info = update as unknown as AcpToolCallInfo;
         if (info.status === "completed" || info.status === "failed") {
+          if (info.rawInput !== undefined) {
+            // A fast-finishing call may jump straight to a terminal update
+            // without ever announcing its arguments; surface them so the
+            // renderer doesn't flush "(no arguments)".
+            this.emitWireEvent("ToolCallPart", {
+              tool_call_id: info.toolCallId,
+              arguments_part: safeJson(info.rawInput),
+            });
+          }
           const output = extractToolOutput(info);
           this.emitWireEvent("ToolResult", {
             tool_call_id: info.toolCallId,
@@ -515,9 +547,41 @@ export class KimiSession extends EventEmitter {
         }
         break;
       }
-      // plan: renderer currently ignores PlanDisplay — skip.
-      // config_option_update / available_commands_update / user_message_chunk:
-      // nothing to surface to consumers.
+      case "config_option_update": {
+        const opts = update.configOptions as AcpConfigOption[] | undefined;
+        if (Array.isArray(opts)) this.configOptions = opts;
+        break;
+      }
+      case "plan": {
+        const raw = update.entries;
+        if (!Array.isArray(raw)) break;
+        // Tolerate missing/unknown fields — unknown statuses render as pending.
+        const entries = raw.map((e) => {
+          const entry = (e ?? {}) as { content?: unknown; status?: unknown; priority?: unknown };
+          return {
+            content: typeof entry.content === "string" ? entry.content : "",
+            status: typeof entry.status === "string" ? entry.status : "pending",
+            ...(typeof entry.priority === "string" ? { priority: entry.priority } : {}),
+          };
+        });
+        this.emitWireEvent("PlanDisplay", { entries });
+        break;
+      }
+      case "available_commands_update": {
+        const raw = update.availableCommands;
+        if (!Array.isArray(raw)) break;
+        // Tolerate missing fields — render what kimi actually sent.
+        this.availableCommands = raw.map((c) => {
+          const cmd = (c ?? {}) as { name?: unknown; description?: unknown; input?: { hint?: unknown } };
+          return {
+            name: typeof cmd.name === "string" ? cmd.name : "?",
+            ...(typeof cmd.description === "string" ? { description: cmd.description } : {}),
+            ...(typeof cmd.input?.hint === "string" ? { input: { hint: cmd.input.hint } } : {}),
+          };
+        });
+        break;
+      }
+      // user_message_chunk: nothing to surface to consumers.
       default:
         break;
     }
@@ -577,12 +641,20 @@ export class KimiSession extends EventEmitter {
       action: toolCall.title ?? "Unknown action",
       description: toolCall.kind,
       command: rawInput?.command ?? toolCall.rawInput,
+      options: options.map((o) => ({ id: o.optionId, label: o.name, kind: o.kind })),
     };
     this.emit("request", { wireRequestId, type: "ApprovalRequest", payload });
   }
 
   private respondPermission(rpcId: number | string, outcome: unknown) {
     this.writeMessage({ jsonrpc: "2.0", id: rpcId, result: { outcome } });
+  }
+
+  /** Human-readable label for a pending permission response (opt<N> → option name), for display. */
+  pendingOptionLabel(wireRequestId: string, response: string): string | null {
+    const acp = this.pendingAcpPermissions.get(wireRequestId);
+    if (!acp || !response.startsWith("opt")) return null;
+    return acp.options[Number(response.slice(3))]?.name ?? null;
   }
 
   /** Map a consumer's generic response to the ACP optionId stored for this request. */
@@ -600,6 +672,12 @@ export class KimiSession extends EventEmitter {
     if (r === "approve_always" || r === "allow_always" || r === "approve_for_session" || r === "always") {
       return byKind("allow_always") ?? byKind("allow_once") ?? null;
     }
+    // "opt<N>" selects the option by index — approval buttons key on index
+    // because optionIds may contain characters Discord customIds can't hold.
+    if (r.startsWith("opt")) {
+      const opt = options[Number(r.slice(3))];
+      return opt?.optionId ?? null;
+    }
     // "deny" and anything unexpected: reject once if possible.
     return byKind("reject_once") ?? null;
   }
@@ -614,9 +692,38 @@ export class KimiSession extends EventEmitter {
 
   // ---- Public API (frozen contract) ----
 
-  async sendPrompt(text: string, context?: unknown): Promise<PromptResult> {
+  getConfigOption(id: string): AcpConfigOption | undefined {
+    return this.configOptions.find((o) => o.id === id);
+  }
+
+  /** Change a kimi config option (model/thinking/mode). Does not start a turn. */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.ensureProcess();
+    if (!this.acpSessionId) {
+      throw new Error("kimi acp session is not initialized");
+    }
+    const result = (await this.rpc("session/set_config_option", {
+      sessionId: this.acpSessionId,
+      configId,
+      value,
+    })) as { configOptions?: AcpConfigOption[] };
+    if (Array.isArray(result?.configOptions)) this.configOptions = result.configOptions;
+  }
+
+  /**
+   * Drop the ACP session: tear down the process (rejecting any queued or
+   * pending work) and forget the persisted mapping, so the next prompt starts
+   * a fresh session/new instead of session/resume. The bot session row and
+   * SessionManager entry stay intact.
+   */
+  async resetContext(): Promise<void> {
+    this.teardown();
+    acpSessionMapDelete(this.sessionId);
+  }
+
+  async sendPrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
     if (this.state === "busy" && !this.handoffPending) {
-      return this.enqueuePrompt(text, context);
+      return this.enqueuePrompt(text, context, extraBlocks);
     }
     // Idle, or the dequeued turn claiming its reserved handoff slot.
     this.handoffPending = false;
@@ -653,7 +760,7 @@ export class KimiSession extends EventEmitter {
           jsonrpc: "2.0",
           id,
           method: "session/prompt",
-          params: { sessionId: acpSessionId, prompt: [{ type: "text", text }] },
+          params: { sessionId: acpSessionId, prompt: [{ type: "text", text }, ...(extraBlocks ?? [])] },
         },
         (err) => {
           if (err) {
@@ -666,11 +773,11 @@ export class KimiSession extends EventEmitter {
     });
   }
 
-  private enqueuePrompt(text: string, context?: unknown): Promise<PromptResult> {
+  private enqueuePrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
     // Queued while busy; the promise settles when the queued prompt eventually
     // runs (or rejects on teardown), instead of never settling.
     return new Promise<PromptResult>((resolve, reject) => {
-      this.messageQueue.push({ text, context, resolve, reject });
+      this.messageQueue.push({ text, context, extraBlocks, resolve, reject });
     });
   }
 
@@ -876,7 +983,7 @@ export class KimiSession extends EventEmitter {
       // Reserve the busy slot across the dequeue → runTurn handoff.
       this.handoffPending = true;
       this.handoffWaiter = next;
-      this.emit("dequeue", { text: next.text, context: next.context });
+      this.emit("dequeue", { text: next.text, context: next.context, extraBlocks: next.extraBlocks });
     } else {
       this.state = "active";
       this.emit("stateChange", this.state);

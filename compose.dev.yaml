@@ -6,8 +6,8 @@
 #   docker compose -f compose.dev.yaml up --build
 #
 # The container runs as the non-root `node` user (uid 1000). Prepare host dirs:
-#   mkdir -p kimicord/data kimicord/.kimi-code workspace
-#   chown -R 1000:1000 kimicord workspace
+#   mkdir -p kimicord/data kimicord/.kimi-code kimicord/workspace
+#   chown -R 1000:1000 kimicord
 #
 # Then authenticate the CLI once:
 #   docker compose -f compose.dev.yaml exec kimicord kimi login
@@ -28,7 +28,7 @@ services:
       # The Kimi Code CLI stores its config (and login credentials) in ~/.kimi-code.
       - ./kimicord/.kimi-code:/home/node/.kimi-code
       # Persistent agent workspace; matches KIMI_WORK_DIR above.
-      - ./workspace:/workspace
+      - ./kimicord/workspace:/workspace
     security_opt:
       - no-new-privileges:true
     healthcheck:

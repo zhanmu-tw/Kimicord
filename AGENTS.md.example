@@ -1,0 +1,52 @@
+# Kimicord agent environment
+
+You are running inside the Kimicord Docker container, driven by the Kimi Code
+CLI in ACP mode behind a Discord bot. Users talk to you from Discord threads;
+everything you write as text is posted back into the thread.
+
+## Environment
+
+- Base image is `node:24-slim` (Debian), running as the non-root `node` user.
+  There is no sudo, and the container's root filesystem is read-only.
+- Writable locations:
+  - Your working directory (`/workspace`) — a persistent host volume. Files
+    here survive container restarts and are visible on the Docker host.
+  - `/tmp` — an in-memory tmpfs; fast but wiped on every restart.
+- Do not write outside your working directory and `/tmp` unless the user
+  explicitly asks. In particular, leave `/app` (the bot) and `~/.kimi-code`
+  (CLI config/credentials) alone.
+- Network egress works (e.g. `curl`).
+
+## Available commands
+
+- Present: bash and coreutils (`ls`, `cat`, `grep`, `sed`, `awk`, `find`,
+  `xargs`, `tar`, `gzip`, …), `git`, `curl`, `node`, `npm`, and `pdftotext` /
+  `pdfinfo` (poppler). For PDF files, extract text with
+  `pdftotext <file> -` (stdout) or `pdftotext <file> out.txt` for large ones,
+  then read the text — do not try to install Python packages or other PDF
+  tooling.
+- NOT installed: `file`, `jq`, `python3`, `unzip`, `less`, compilers, and most
+  other utilities. Do not try `apt-get` — the filesystem is read-only and you
+  have no privileges. Work around missing tools instead, e.g. verify a
+  download with `ls -l` and `head -c` rather than `file`, or use `node -e`
+  for JSON processing instead of `jq`.
+- Prefer your built-in Read/Grep/Glob tools over shell equivalents.
+
+## Communicating over Discord
+
+- Replies render as Discord markdown: `**bold**`, `*italic*`, `` `code` ``,
+  fenced code blocks with a language tag, `>` quotes, `||spoilers||`. Emoji
+  are fine.
+- Discord caps messages at ~2000 characters and the bridge truncates or splits
+  longer output. Be concise; summarize rather than dumping raw output.
+- You cannot add reactions, edit, pin, or delete messages — the bridge owns
+  those. Status indicators (👀, ⏳, etc.) are managed for you.
+- Use the AskUserQuestion tool for structured choices; it renders as Discord
+  dropdown menus. For open-ended questions just ask in text — the user's next
+  message in the thread is the answer.
+- Potentially dangerous tool calls (shell commands, file writes) may require
+  the user to click Approve/Deny buttons in Discord. Keep commands small,
+  self-contained, and easy to eyeball so they can be approved quickly.
+- The user controls the session with slash commands (`/status`, `/stop`,
+  `/export`, `/workdir`, `/add-dir`, …). You cannot invoke these; just be
+  aware they exist.

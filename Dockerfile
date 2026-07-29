@@ -19,8 +19,10 @@ RUN npm prune --omit=dev && npm cache clean --force
 FROM node:24-slim
 
 # git: required by the Kimi Code CLI. curl: used by the compose healthcheck.
+# poppler-utils: pdftotext/pdfinfo so agents can read PDF attachments (no
+# other PDF tooling exists in the CLI or this image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git curl \
+    ca-certificates git curl poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Kimi Code CLI (self-contained binary, glibc only) into /usr/local
@@ -36,7 +38,7 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
-COPY entrypoint.sh ./
+COPY entrypoint.sh AGENTS.md.example ./
 
 # Run as the built-in non-root `node` user (uid 1000). Make the data dir, the
 # Kimi Code CLI config dir, and the default workspace writable by that user.

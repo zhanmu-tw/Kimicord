@@ -23,11 +23,15 @@ services:
     volumes:
       # The container runs as the non-root `node` user (uid 1000). The host
       # directories below must be writable by that uid, e.g.:
-      #   mkdir -p kimicord/data kimicord/.kimi-code
+      #   mkdir -p kimicord/data kimicord/.kimi-code kimicord/workspace
       #   chown -R 1000:1000 kimicord
       - ./kimicord/data:/app/data
       # The new Kimi Code CLI stores its config in ~/.kimi-code.
       - ./kimicord/.kimi-code:/home/node/.kimi-code
+      # Persistent agent workspace; matches KIMI_WORK_DIR above. Note the
+      # container's root filesystem is read-only — without this mount the
+      # agent has nowhere persistent (or writable) to work.
+      - ./kimicord/workspace:/workspace
     security_opt:
       - no-new-privileges:true
     cap_drop:

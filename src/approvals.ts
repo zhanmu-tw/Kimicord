@@ -51,25 +51,47 @@ export async function postApproval(
     .setDescription(desc.slice(0, 4000))
     .setColor(0xd97706);
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`approve:${wireRequestId}:${session.threadId}:approve`)
-      .setLabel("✅ Allow")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`approve:${wireRequestId}:${session.threadId}:deny`)
-      .setLabel("❌ Deny")
-      .setStyle(ButtonStyle.Danger)
-  );
+  let rows: ActionRowBuilder<ButtonBuilder>[];
+  if (payload.options && payload.options.length > 0) {
+    // One button per ACP permission option, keyed by index ("opt<N>") —
+    // optionIds may contain characters Discord customIds can't hold.
+    const options = payload.options.slice(0, 25);
+    rows = [];
+    for (let i = 0; i < options.length; i += 5) {
+      const row = new ActionRowBuilder<ButtonBuilder>();
+      options.slice(i, i + 5).forEach((opt, j) => {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`approve:${wireRequestId}:${session.threadId}:opt${i + j}`)
+            .setLabel(truncate(opt.label, 80))
+            .setStyle(optionStyle(opt.kind))
+        );
+      });
+      rows.push(row);
+    }
+  } else {
+    rows = [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`approve:${wireRequestId}:${session.threadId}:approve`)
+          .setLabel("✅ Allow")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`approve:${wireRequestId}:${session.threadId}:deny`)
+          .setLabel("❌ Deny")
+          .setStyle(ButtonStyle.Danger)
+      ),
+    ];
+  }
 
-  const msg = await channel.send({ embeds: [embed], components: [row] });
+  const msg = await channel.send({ embeds: [embed], components: rows });
 
   session.registerPendingRequest(wireRequestId, "ApprovalRequest", 120000).then((res) => {
     if (res === "__timeout__" && tryMarkResolved(wireRequestId)) {
       session.resolveRequest(wireRequestId, "deny");
       msg.edit({
         content: "Auto-denied — timed out.",
-        components: disableComponents(row),
+        components: disableComponents(rows),
       }).catch(() => {});
     }
   }).catch(console.error);
@@ -208,9 +230,28 @@ export async function postToolCallRequest(
   return postApproval(channel, session, wireRequestId, p);
 }
 
-function disableComponents(row: ActionRowBuilder<ButtonBuilder>): ActionRowBuilder<ButtonBuilder>[] {
-  const disabled = row.components.map((b) => ButtonBuilder.from(b).setDisabled(true));
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(disabled)];
+function disableComponents(rows: ActionRowBuilder<ButtonBuilder>[]): ActionRowBuilder<ButtonBuilder>[] {
+  return rows.map(
+    (row) =>
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        row.components.map((b) => ButtonBuilder.from(b).setDisabled(true))
+      )
+  );
+}
+
+function optionStyle(kind: string | undefined): ButtonStyle {
+  switch (kind) {
+    case "allow_once":
+      return ButtonStyle.Success;
+    case "allow_always":
+      return ButtonStyle.Primary;
+    case "reject_once":
+      return ButtonStyle.Danger;
+    case "reject_always":
+      return ButtonStyle.Secondary;
+    default:
+      return ButtonStyle.Primary;
+  }
 }
 
 function truncate(s: string, n: number): string {
