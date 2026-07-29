@@ -22,13 +22,35 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 
 ## Quick start
 
-1. Copy the example environment file and fill in your values:
+1. In the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application and bot, then invite it to your server with the `bot`
+   and `applications.commands` scopes. The bot needs these permissions in every
+   channel listed in `CHANNEL_MODE_IDS` / `FORUM_MODE_IDS`:
+
+   - **View Channel**, **Send Messages**, **Send Messages in Threads**
+   - **Create Public Threads**
+   - **Embed Links** — status, approval, and error messages are embeds; without
+     this every turn fails with `50013 Missing Permissions`
+   - **Attach Files** — for `/export` and oversized responses
+   - **Add Reactions** — for status indicators (👀, ⏳)
+   - **Read Message History**
+
+   Also enable the **Message Content** privileged intent (Bot → Privileged
+   Gateway Intents) or the bot cannot read message text.
+
+   Note: channel-level permission overrides win over role defaults. If the bot
+   works in one channel but fails with `50013` in another, compare the two
+   channels' **Edit Channel → Permissions** overwrites — a common culprit is
+   `@everyone` being denied Embed Links with no role/member overwrite
+   restoring it for the bot.
+
+2. Copy the example environment file and fill in your values:
 
    ```bash
    cp .env.example .env
    ```
 
-2. Use the pre-built image from GitHub Container Registry with Docker Compose:
+3. Use the pre-built image from GitHub Container Registry with Docker Compose:
 
    ```yaml
    services:
@@ -82,7 +104,7 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
    which stores its configuration in `~/.kimi-code` inside the container
    (mounted from `./kimicord/.kimi-code` on the host).
 
-3. Log in to Kimi Code CLI inside the container (device-code flow — follow the
+4. Log in to Kimi Code CLI inside the container (device-code flow — follow the
    URL it prints):
 
    ```bash
@@ -101,7 +123,7 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
    Note: the CLI reads `KIMI_API_KEY` from this config file, not from the
    process environment.
 
-4. Restart the bot if needed:
+5. Restart the bot if needed:
    ```bash
    docker compose restart
    ```
