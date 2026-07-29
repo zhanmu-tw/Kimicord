@@ -137,6 +137,20 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 
 See `.env.example` for all available options and defaults.
 
+## Agent instructions (AGENTS.md)
+
+Kimi Code reads `AGENTS.md` instruction files, and both levels are reachable
+through the volume mounts:
+
+- **Global (all sessions):** `kimicord/.kimi-code/AGENTS.md` on the host. On
+  first start the entrypoint seeds this from `AGENTS.md.example` (a briefing
+  on the container environment, available commands, and how replies render in
+  Discord) if you haven't created one. Edit it freely — it is never
+  overwritten.
+- **Per-project:** an `AGENTS.md` at the root of whatever you mount as
+  `kimicord/workspace` (or inside individual project directories under it)
+  applies to sessions working in that tree.
+
 ## Security considerations
 
 - **Arbitrary code execution:** Any Discord user listed in `ALLOWED_USER_IDS` can execute arbitrary shell commands on the host via Kimi's built-in tool system. Run Kimicord inside a container with minimal privileges and restrict volume mounts to only what is necessary.

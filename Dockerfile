@@ -36,7 +36,7 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
-COPY entrypoint.sh ./
+COPY entrypoint.sh AGENTS.md.example ./
 
 # Run as the built-in non-root `node` user (uid 1000). Make the data dir, the
 # Kimi Code CLI config dir, and the default workspace writable by that user.
