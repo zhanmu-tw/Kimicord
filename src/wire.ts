@@ -39,6 +39,8 @@ export interface ToolCallPayload {
 }
 
 export interface ToolCallPartPayload {
+  /** Set when the part targets a known call (e.g. rawInput from a terminal ACP update). */
+  tool_call_id?: string;
   arguments_part: string;
 }
 

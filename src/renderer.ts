@@ -11,6 +11,7 @@ import {
   ContentPartTextPayload,
   ContentPartThinkPayload,
   ToolCallPayload,
+  ToolCallPartPayload,
   ToolResultPayload,
   StepBeginPayload,
   StatusUpdatePayload,
@@ -105,14 +106,18 @@ export class TurnRenderer {
         break;
       }
       case "ToolCallPart": {
-        const p = event.params.payload as { arguments_part: string };
-        if (this.lastToolCallId) {
-          const buf = this.pendingToolCalls.get(this.lastToolCallId);
-          if (buf) {
-            buf.args += p.arguments_part;
+        const p = event.params.payload as ToolCallPartPayload;
+        const id = p.tool_call_id ?? this.lastToolCallId;
+        if (id) {
+          const buf = this.pendingToolCalls.get(id);
+          if (buf && !buf.posted) {
+            // Parts from the ACP bridge are full rawInput snapshots, so fill
+            // an empty buffer rather than appending a duplicate; legacy
+            // streaming deltas still append.
+            buf.args = buf.args.trim() ? buf.args + p.arguments_part : p.arguments_part;
             // Post once we have a complete-looking JSON object
-            if (!buf.posted && buf.args.trim().endsWith("}")) {
-              this.flushToolCall(this.lastToolCallId).catch(console.error);
+            if (buf.args.trim().endsWith("}")) {
+              this.flushToolCall(id).catch(console.error);
             }
           }
         }
@@ -363,14 +368,20 @@ export class TurnRenderer {
 
     // SHOW_TOOL_OUTPUT=false hides command output from the thread (the "⚙️"
     // tool call line itself still shows what ran); failures still surface as a
-    // one-liner so errors aren't silent.
+    // bounded snippet so errors aren't silent but can't flood the thread.
     if (!CONFIG.showToolOutput) {
       if (buf && !buf.posted) {
         await this.flushToolCall(id);
       }
       this.pendingToolCalls.delete(id);
       if (payload.return_value?.is_error) {
-        await this.channel.send("⚠️ Tool call failed (output hidden — set `SHOW_TOOL_OUTPUT=true` to see it)");
+        const reason = (payload.return_value.output ?? "").trim();
+        if (reason) {
+          const snippet = reason.replace(/```/g, "'''").slice(0, 400);
+          await this.channel.send(`⚠️ Tool call failed\n\`\`\`\n${snippet}\n\`\`\``);
+        } else {
+          await this.channel.send("⚠️ Tool call failed (no error output)");
+        }
       }
       return;
     }

@@ -503,6 +503,15 @@ export class KimiSession extends EventEmitter {
       case "tool_call_update": {
         const info = update as unknown as AcpToolCallInfo;
         if (info.status === "completed" || info.status === "failed") {
+          if (info.rawInput !== undefined) {
+            // A fast-finishing call may jump straight to a terminal update
+            // without ever announcing its arguments; surface them so the
+            // renderer doesn't flush "(no arguments)".
+            this.emitWireEvent("ToolCallPart", {
+              tool_call_id: info.toolCallId,
+              arguments_part: safeJson(info.rawInput),
+            });
+          }
           const output = extractToolOutput(info);
           this.emitWireEvent("ToolResult", {
             tool_call_id: info.toolCallId,
