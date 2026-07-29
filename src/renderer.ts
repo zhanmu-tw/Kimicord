@@ -443,12 +443,6 @@ export class TurnRenderer {
         { name: "Trigger", value: this.trigger, inline: true },
         { name: "Working dir", value: this.workDir, inline: false },
         { name: "YOLO", value: String(this.yolo), inline: true },
-        { name: "Step", value: String(this.stepCount), inline: true },
-        {
-          name: "Context",
-          value: `${(this.contextUsage * 100).toFixed(1)}%`,
-          inline: true,
-        },
         { name: "Status", value: status, inline: false },
       )
       .setColor(
