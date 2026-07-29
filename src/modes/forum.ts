@@ -53,7 +53,7 @@ export async function handleNewPost(thread: ThreadChannel, config: ChannelConfig
 
   runTurn(session, thread, promptText || "(no text)", msg).catch(async (e) => {
     console.error(e);
-    await thread.send({ embeds: [buildErrorEmbed(e)] });
+    await thread.send({ embeds: [buildErrorEmbed(e)] }).catch(() => {});
   });
 }
 
@@ -91,7 +91,7 @@ export async function handleReply(message: Message) {
   } else {
     runTurn(session, thread, promptText, message, att.imageBlocks).catch(async (e) => {
       console.error(e);
-      await thread.send({ embeds: [buildErrorEmbed(e)] });
+      await thread.send({ embeds: [buildErrorEmbed(e)] }).catch(() => {});
     });
   }
 }
@@ -105,7 +105,7 @@ function ensureDequeueHandler(session: ReturnType<typeof SessionManager.getOrCre
     }
     runTurn(session, thread, item.text, msg, item.extraBlocks).catch(async (e) => {
       console.error(e);
-      await thread.send({ embeds: [buildErrorEmbed(e)] });
+      await thread.send({ embeds: [buildErrorEmbed(e)] }).catch(() => {});
     });
   });
 }
