@@ -20,7 +20,11 @@ everything you write as text is posted back into the thread.
 ## Available commands
 
 - Present: bash and coreutils (`ls`, `cat`, `grep`, `sed`, `awk`, `find`,
-  `xargs`, `tar`, `gzip`, …), `git`, `curl`, `node`, `npm`.
+  `xargs`, `tar`, `gzip`, …), `git`, `curl`, `node`, `npm`, and `pdftotext` /
+  `pdfinfo` (poppler). For PDF files, extract text with
+  `pdftotext <file> -` (stdout) or `pdftotext <file> out.txt` for large ones,
+  then read the text — do not try to install Python packages or other PDF
+  tooling.
 - NOT installed: `file`, `jq`, `python3`, `unzip`, `less`, compilers, and most
   other utilities. Do not try `apt-get` — the filesystem is read-only and you
   have no privileges. Work around missing tools instead, e.g. verify a

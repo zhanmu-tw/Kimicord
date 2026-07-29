@@ -19,8 +19,10 @@ RUN npm prune --omit=dev && npm cache clean --force
 FROM node:24-slim
 
 # git: required by the Kimi Code CLI. curl: used by the compose healthcheck.
+# poppler-utils: pdftotext/pdfinfo so agents can read PDF attachments (no
+# other PDF tooling exists in the CLI or this image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git curl \
+    ca-certificates git curl poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Kimi Code CLI (self-contained binary, glibc only) into /usr/local
