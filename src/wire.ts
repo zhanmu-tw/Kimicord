@@ -205,6 +205,13 @@ export interface AcpConfigOption {
   options: AcpConfigOptionChoice[];
 }
 
+/** A slash command or skill the agent offers, from available_commands_update. */
+export interface AcpAvailableCommand {
+  name: string;
+  description?: string;
+  input?: { hint?: string };
+}
+
 export interface AcpNewSessionResult {
   sessionId: string;
   modes?: unknown;

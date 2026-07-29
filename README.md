@@ -124,6 +124,7 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 | `/interrupt`       | Interrupt the current turn without killing the session                  |
 | `/stop`            | Cancel the current turn and kill the session                            |
 | `/status`          | Show session info                                                       |
+| `/commands`        | List the commands this kimi session offers                              |
 | `/workdir <path>`  | Set working directory for the thread's next session                     |
 | `/sessions`        | List all sessions (admin only)                                          |
 | `/compact [focus]` | Compact the Kimi context                                                |

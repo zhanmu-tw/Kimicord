@@ -37,6 +37,7 @@ export async function registerCommands() {
     new SlashCommandBuilder().setName("interrupt").setDescription("Interrupt the current turn without killing the session").toJSON(),
     new SlashCommandBuilder().setName("stop").setDescription("Cancel the current turn and kill the session").toJSON(),
     new SlashCommandBuilder().setName("status").setDescription("Show session info").toJSON(),
+    new SlashCommandBuilder().setName("commands").setDescription("List the commands this kimi session offers").toJSON(),
     new SlashCommandBuilder()
       .setName("workdir")
       .setDescription("Set working directory for the next session in this thread")
@@ -402,6 +403,43 @@ export function attachBotHandlers(client: Client) {
         )
         .setColor(0x3b82f6);
       await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (commandName === "commands") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No active session here.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!session.availableCommands.length) {
+        await interaction.reply({
+          content: "No command list reported yet — the session may not have started. Send a message first.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const lines = session.availableCommands.map((c) => {
+        const hint = c.input?.hint ? ` \`${c.input.hint}\`` : "";
+        return `**/${c.name}**${hint}${c.description ? ` — ${c.description}` : ""}`;
+      });
+      // Truncate at a line boundary; footer reports what was dropped.
+      let content = "";
+      let shown = 0;
+      for (const line of lines) {
+        const remaining = lines.length - shown - 1;
+        const footer = remaining > 0 ? `\n…and ${remaining} more` : "";
+        if (content.length + line.length + 1 + footer.length > 1900) break;
+        content += (content ? "\n" : "") + line;
+        shown++;
+      }
+      if (shown < lines.length) content += `\n…and ${lines.length - shown} more`;
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
 

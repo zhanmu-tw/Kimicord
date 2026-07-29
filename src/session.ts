@@ -13,6 +13,7 @@ import {
   AcpInitializeResult,
   AcpNewSessionResult,
   AcpConfigOption,
+  AcpAvailableCommand,
   AcpPromptResult,
   AcpSessionUpdateParams,
   AcpSessionUpdate,
@@ -200,6 +201,9 @@ export class KimiSession extends EventEmitter {
   // config_option_update. Lives on the session object so it survives idle
   // respawns of the kimi process.
   configOptions: AcpConfigOption[] = [];
+  // Slash commands and skills the session offers, from available_commands_update
+  // (sent right after session/new). Surfaced via the /commands Discord command.
+  availableCommands: AcpAvailableCommand[] = [];
   pendingRequests = new Map<string, PendingRequest>();
   idleTimer: NodeJS.Timeout | null = null;
   pendingQuestion: { wireRequestId: string } | null = null;
@@ -553,8 +557,21 @@ export class KimiSession extends EventEmitter {
         this.emitWireEvent("PlanDisplay", { entries });
         break;
       }
-      // available_commands_update / user_message_chunk:
-      // nothing to surface to consumers.
+      case "available_commands_update": {
+        const raw = update.availableCommands;
+        if (!Array.isArray(raw)) break;
+        // Tolerate missing fields — render what kimi actually sent.
+        this.availableCommands = raw.map((c) => {
+          const cmd = (c ?? {}) as { name?: unknown; description?: unknown; input?: { hint?: unknown } };
+          return {
+            name: typeof cmd.name === "string" ? cmd.name : "?",
+            ...(typeof cmd.description === "string" ? { description: cmd.description } : {}),
+            ...(typeof cmd.input?.hint === "string" ? { input: { hint: cmd.input.hint } } : {}),
+          };
+        });
+        break;
+      }
+      // user_message_chunk: nothing to surface to consumers.
       default:
         break;
     }
