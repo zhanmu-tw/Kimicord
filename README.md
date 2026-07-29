@@ -157,6 +157,26 @@ through the volume mounts:
   `kimicord/workspace` (or inside individual project directories under it)
   applies to sessions working in that tree.
 
+## Known limitations
+
+Kimicord talks to the Kimi Code CLI over ACP (Agent Client Protocol). Some
+CLI features are not exposed to ACP clients and therefore cannot be offered
+in Discord:
+
+- **Free-text question answers** — ACP permission requests only carry option
+  selections, so a typed reply to a question maps to the matching option
+  label, or to "Skip" if nothing matches.
+- **Multi-question / multi-select questions** — kimi's ACP layer flattens
+  these to a single single-select question before the bridge sees them.
+- **Token and context-usage stats** — not exposed over ACP (this is why the
+  status embed has no Context or Step fields).
+- **Mid-turn steering** — ACP has no steer method; messages sent while a turn
+  is running are queued and delivered when the turn ends.
+- **Audio/video prompts** — ACP supports image content blocks only.
+- **No history replay** — sessions resume via `session/resume` (not
+  `session/load`), so past conversation is not re-rendered into the thread
+  after a bot restart.
+
 ## Security considerations
 
 - **Arbitrary code execution:** Any Discord user listed in `ALLOWED_USER_IDS` can execute arbitrary shell commands on the host via Kimi's built-in tool system. Run Kimicord inside a container with minimal privileges and restrict volume mounts to only what is necessary.
