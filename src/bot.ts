@@ -102,7 +102,9 @@ export async function registerCommands() {
 export function attachBotHandlers(client: Client) {
   client.on(Events.MessageCreate, async (message: Message) => {
     try {
-      if (message.author.bot) return;
+      // System messages (pins, boosts, joins) are authored by users but
+      // carry no prompt content
+      if (message.author.bot || message.system) return;
       if (message.guildId && !client.guilds.cache.has(message.guildId)) return;
 
       // Determine effective channel id

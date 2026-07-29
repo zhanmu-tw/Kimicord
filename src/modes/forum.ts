@@ -64,6 +64,9 @@ export async function handleReply(message: Message) {
   const session = SessionManager.get(message.channelId);
   if (!session) return;
 
+  // Nothing to prompt with (e.g. attachment-only or otherwise empty messages)
+  if (!message.content.trim()) return;
+
   if (session.resolveQuestion(message.content)) {
     return;
   }
