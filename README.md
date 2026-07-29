@@ -14,7 +14,7 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 
 - **Channel mode** — respond to @mentions or all messages in configured channels
 - **Forum mode** — auto-reply to new forum posts
-- **Slash commands** — `/new`, `/interrupt`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, `/init`, `/test`
+- **Slash commands** — `/new`, `/interrupt`, `/stop`, `/status`, `/workdir`, `/sessions`, `/compact`, `/clear`, `/yolo`, `/plan`, `/export`, `/init`, `/test`
 - **Dashboard** — lightweight HTTP dashboard for live session stats
 - **MCP support** — auto-detects `mcp.json` (configurable via `MCP_CONFIG_PATH`) and passes it to `kimi`
 - **Attachments** — images (≤10 MB) are forwarded as vision input; all attachments (≤25 MB) are saved under `.kimicord/attachments/` in the workspace for the agent to read
@@ -128,13 +128,12 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
 | `/workdir <path>`  | Set working directory for the thread's next session                     |
 | `/sessions`        | List all sessions (admin only)                                          |
 | `/compact [focus]` | Compact the Kimi context                                                |
-| `/clear`           | Clear the Kimi context                                                  |
-| `/yolo`            | Toggle YOLO mode                                                        |
-| `/plan [mode]`     | Toggle or view plan mode                                                |
+| `/clear`           | Start a fresh kimi session in this thread                               |
+| `/yolo`            | Toggle YOLO mode (via the ACP mode picker)                              |
+| `/plan [mode]`     | Toggle or view plan mode (via the ACP mode picker)                      |
 | `/model`           | Choose the Kimi model                                                   |
 | `/effort`          | Choose the thinking effort                                              |
 | `/mode`            | Choose the permission mode                                              |
-| `/add-dir <path>`  | Add a directory to the workspace                                        |
 | `/export`          | Export current context and upload it as a Discord file attachment       |
 | `/init`            | Generate `AGENTS.md` via Kimi                                           |
 | `/test <type>`     | Send a test request (`approval`, `toolcall`, `question`, `multiselect`) |
@@ -176,11 +175,16 @@ in Discord:
 - **No history replay** — sessions resume via `session/resume` (not
   `session/load`), so past conversation is not re-rendered into the thread
   after a bot restart.
+- **Adding workspace directories mid-session** — not exposed over ACP (the
+  old `/add-dir` was removed; use `/workdir` before the session starts).
+- **kimi's own ACP commands** — `/usage`, `/mcp`, `/tasks`, `/status`, and
+  friends can be typed directly as chat messages in a thread; kimi
+  intercepts them in prompt text.
 
 ## Security considerations
 
 - **Arbitrary code execution:** Any Discord user listed in `ALLOWED_USER_IDS` can execute arbitrary shell commands on the host via Kimi's built-in tool system. Run Kimicord inside a container with minimal privileges and restrict volume mounts to only what is necessary.
-- **Path traversal:** `/workdir` and `/add-dir` are sanitized so they cannot escape `KIMI_WORK_DIR`. Keep your volume mounts tight to minimize blast radius.
+- **Path traversal:** `/workdir` paths are sanitized so they cannot escape `KIMI_WORK_DIR`. Keep your volume mounts tight to minimize blast radius.
 - **Dashboard exposure:** The HTTP dashboard exposes live session metadata. Set `DASHBOARD_API_KEY` if the dashboard port is reachable from untrusted networks.
 - **Secret management:** Do not commit `.env` to version control. In production, prefer Docker secrets, a vault, or your orchestrator's secret injection. Rotate Discord tokens regularly.
 

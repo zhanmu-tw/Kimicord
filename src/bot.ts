@@ -58,13 +58,8 @@ export async function registerCommands() {
       .setName("plan")
       .setDescription("Toggle or view plan mode in kimi")
       .addStringOption((opt) =>
-        opt.setName("mode").setDescription("on, off, view, or clear").setRequired(false)
+        opt.setName("mode").setDescription("on, off, or view").setRequired(false)
       )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("add-dir")
-      .setDescription("Add a directory to the kimi workspace")
-      .addStringOption((opt) => opt.setName("path").setDescription("Directory path").setRequired(true))
       .toJSON(),
     new SlashCommandBuilder().setName("export").setDescription("Export current kimi context and upload it as a file").toJSON(),
     new SlashCommandBuilder().setName("init").setDescription("Generate AGENTS.md via kimi").toJSON(),
@@ -638,8 +633,9 @@ export function attachBotHandlers(client: Client) {
       return;
     }
 
-    const proxyCommands = ["compact", "clear", "yolo", "plan", "add-dir", "init"];
-    if (proxyCommands.includes(commandName)) {
+    // kimi's ACP layer only intercepts a fixed command set in prompt text, so
+    // only /compact can be proxied; the rest are handled bot-side below.
+    if (commandName === "compact") {
       if (!channel || !(channel instanceof ThreadChannel)) {
         await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
         return;
@@ -650,29 +646,113 @@ export function attachBotHandlers(client: Client) {
         await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
         return;
       }
-      let prompt = "/" + commandName;
-      if (commandName === "compact") {
-        const focus = interaction.options.getString("focus");
-        if (focus) prompt += ` ${focus}`;
-      }
-      if (commandName === "plan") {
-        const mode = interaction.options.getString("mode");
-        if (mode) prompt += ` ${mode}`;
-      }
-      if (commandName === "add-dir") {
-        const p = interaction.options.getString("path", true);
-        try {
-          const sanitized = sanitizeWorkDir(p);
-          prompt += ` ${sanitized}`;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          await interaction.reply({ content: `❌ Invalid path: ${msg}`, flags: MessageFlags.Ephemeral });
-          return;
-        }
-      }
+      let prompt = "/compact";
+      const focus = interaction.options.getString("focus");
+      if (focus) prompt += ` ${focus}`;
       await interaction.reply({ content: `➡️ Sending \`${prompt}\` to kimi…`, flags: MessageFlags.Ephemeral });
       const { runTurn } = await import("./turn.js");
       runTurn(session, thread, prompt).catch(async (e) => {
+        await thread.send({ embeds: [buildErrorEmbed(e)] });
+      });
+      return;
+    }
+
+    // /plan and /yolo switch the ACP "mode" config option directly.
+    if (commandName === "plan" || commandName === "yolo") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const option = session.getConfigOption("mode");
+      if (!option || option.options.length === 0) {
+        await interaction.reply({ content: "This session doesn't expose mode switching.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const arg = commandName === "plan" ? interaction.options.getString("mode") : null;
+      if (arg === "view") {
+        const current = option.options.find((c) => c.value === option.currentValue);
+        await interaction.reply({
+          content: `⚙️ Current mode: **${current?.name ?? option.currentValue ?? "?"}**`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      let target: string;
+      if (commandName === "yolo") {
+        target = option.currentValue === "yolo" ? "default" : "yolo";
+      } else if (arg === "on") {
+        target = "plan";
+      } else if (arg === "off") {
+        target = "default";
+      } else {
+        target = option.currentValue === "plan" ? "default" : "plan";
+      }
+      try {
+        await session.setConfigOption("mode", target);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await interaction.reply({ content: `❌ Sorry, I couldn't change the mode: ${msg}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (commandName === "yolo") {
+        const enabled = target === "yolo";
+        await interaction.reply({ content: `✅ ${enabled ? "Enabled" : "Disabled"} **YOLO** mode`, flags: MessageFlags.Ephemeral });
+        await thread.send(`⚙️ <@${interaction.user.id}> ${enabled ? "enabled" : "disabled"} **YOLO** mode`).catch(() => {});
+      } else {
+        const modeName = target === "plan" ? "Plan" : "Default";
+        await interaction.reply({ content: `✅ Switched to **${modeName}** mode`, flags: MessageFlags.Ephemeral });
+        await thread.send(`⚙️ <@${interaction.user.id}> switched to **${modeName}** mode`).catch(() => {});
+      }
+      return;
+    }
+
+    // /clear drops the ACP session so the next message starts a fresh one.
+    if (commandName === "clear") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await session.resetContext();
+      await interaction.reply({
+        content: "🧹 Context cleared — the next message in this thread starts a fresh session.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // /init has no ACP command; ask for AGENTS.md in natural language instead.
+    if (commandName === "init") {
+      if (!channel || !(channel instanceof ThreadChannel)) {
+        await interaction.reply({ content: "This command only works inside a thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const thread = channel as ThreadChannel;
+      const session = SessionManager.get(thread.id);
+      if (!session) {
+        await interaction.reply({ content: "No session in this thread.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.reply({ content: "➡️ Asking kimi to generate AGENTS.md…", flags: MessageFlags.Ephemeral });
+      const { runTurn } = await import("./turn.js");
+      runTurn(
+        session,
+        thread,
+        "Explore this project and create an AGENTS.md file at the root of the working directory. " +
+          "Capture how to build, test, and run it, the project structure, and any conventions a coding agent should follow. " +
+          "Keep it concise."
+      ).catch(async (e) => {
         await thread.send({ embeds: [buildErrorEmbed(e)] });
       });
       return;

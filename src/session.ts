@@ -89,6 +89,16 @@ function acpSessionMapSet(botSessionId: string, acpSessionId: string): void {
   }
 }
 
+function acpSessionMapDelete(botSessionId: string): void {
+  if (!getAcpSessionMap().delete(botSessionId)) return;
+  try {
+    mkdirSync(path.dirname(ACP_SESSION_MAP_PATH), { recursive: true });
+    writeFileSync(ACP_SESSION_MAP_PATH, JSON.stringify(Object.fromEntries(getAcpSessionMap()), null, 2));
+  } catch (err) {
+    console.warn("Failed to persist ACP session map:", err);
+  }
+}
+
 /** Convert a Claude-style mcp.json ({ mcpServers: { name: def } }) into ACP mcpServers entries. */
 function loadMcpServers(log: (...args: unknown[]) => void): AcpMcpServer[] {
   const p = CONFIG.mcpConfigPath;
@@ -691,6 +701,17 @@ export class KimiSession extends EventEmitter {
       value,
     })) as { configOptions?: AcpConfigOption[] };
     if (Array.isArray(result?.configOptions)) this.configOptions = result.configOptions;
+  }
+
+  /**
+   * Drop the ACP session: tear down the process (rejecting any queued or
+   * pending work) and forget the persisted mapping, so the next prompt starts
+   * a fresh session/new instead of session/resume. The bot session row and
+   * SessionManager entry stay intact.
+   */
+  async resetContext(): Promise<void> {
+    this.teardown();
+    acpSessionMapDelete(this.sessionId);
   }
 
   async sendPrompt(text: string, context?: unknown, extraBlocks?: AcpPromptContentBlock[]): Promise<PromptResult> {
