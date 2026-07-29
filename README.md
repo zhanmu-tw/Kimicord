@@ -54,11 +54,13 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
        volumes:
          # The container runs as the non-root `node` user (uid 1000); the host
          # directories must be writable by that uid:
-         #   mkdir -p kimicord/data kimicord/.kimi-code
+         #   mkdir -p kimicord/data kimicord/.kimi-code kimicord/workspace
          #   chown -R 1000:1000 kimicord
          - ./kimicord/data:/app/data
          # The new Kimi Code CLI stores its config in ~/.kimi-code.
          - ./kimicord/.kimi-code:/home/node/.kimi-code
+         # Persistent agent workspace; matches KIMI_WORK_DIR above.
+         - ./kimicord/workspace:/workspace
        restart: unless-stopped
    ```
 
@@ -101,6 +103,16 @@ A Discord bot that bridges Discord threads to [Kimi Code CLI](https://www.moonsh
    ```bash
    docker compose restart
    ```
+
+## Upgrading
+
+- **Workspace mount moved (breaking):** all host state now lives under
+  `kimicord/`. If you used the old dev compose with a top-level `./workspace`
+  mount, move your data first: `mv workspace kimicord/workspace`. The prod
+  compose now also mounts `kimicord/workspace` — create it writable by
+  uid 1000 (`mkdir -p kimicord/workspace && chown 1000:1000 kimicord/workspace`)
+  before recreating the container, or Docker creates it root-owned and the
+  agent cannot write to it.
 
 ## Slash commands
 
