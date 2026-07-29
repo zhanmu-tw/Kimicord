@@ -586,6 +586,7 @@ export class KimiSession extends EventEmitter {
       action: toolCall.title ?? "Unknown action",
       description: toolCall.kind,
       command: rawInput?.command ?? toolCall.rawInput,
+      options: options.map((o) => ({ id: o.optionId, label: o.name, kind: o.kind })),
     };
     this.emit("request", { wireRequestId, type: "ApprovalRequest", payload });
   }
@@ -608,6 +609,12 @@ export class KimiSession extends EventEmitter {
     if (r === "approve" || r === "allow") return byKind("allow_once") ?? null;
     if (r === "approve_always" || r === "allow_always" || r === "approve_for_session" || r === "always") {
       return byKind("allow_always") ?? byKind("allow_once") ?? null;
+    }
+    // "opt<N>" selects the option by index — approval buttons key on index
+    // because optionIds may contain characters Discord customIds can't hold.
+    if (r.startsWith("opt")) {
+      const opt = options[Number(r.slice(3))];
+      return opt?.optionId ?? null;
     }
     // "deny" and anything unexpected: reject once if possible.
     return byKind("reject_once") ?? null;

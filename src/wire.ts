@@ -86,6 +86,7 @@ export interface ApprovalRequestPayload {
   action: string;
   description?: string;
   command?: unknown;
+  options?: { id: string; label: string; kind?: string }[];
 }
 
 export interface QuestionOption {
