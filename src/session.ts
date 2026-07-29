@@ -538,7 +538,21 @@ export class KimiSession extends EventEmitter {
         if (Array.isArray(opts)) this.configOptions = opts;
         break;
       }
-      // plan: renderer currently ignores PlanDisplay — skip.
+      case "plan": {
+        const raw = update.entries;
+        if (!Array.isArray(raw)) break;
+        // Tolerate missing/unknown fields — unknown statuses render as pending.
+        const entries = raw.map((e) => {
+          const entry = (e ?? {}) as { content?: unknown; status?: unknown; priority?: unknown };
+          return {
+            content: typeof entry.content === "string" ? entry.content : "",
+            status: typeof entry.status === "string" ? entry.status : "pending",
+            ...(typeof entry.priority === "string" ? { priority: entry.priority } : {}),
+          };
+        });
+        this.emitWireEvent("PlanDisplay", { entries });
+        break;
+      }
       // available_commands_update / user_message_chunk:
       // nothing to surface to consumers.
       default:

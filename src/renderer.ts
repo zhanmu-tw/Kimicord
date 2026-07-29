@@ -16,6 +16,7 @@ import {
   StepBeginPayload,
   StatusUpdatePayload,
   TurnEndPayload,
+  PlanDisplayPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
 import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
@@ -47,6 +48,10 @@ export class TurnRenderer {
   private lastStatusEditAt = 0;
   private statusTimer: NodeJS.Timeout | null = null;
   private pendingStatus: string | null = null;
+  private planMessage: Message | null = null;
+  private planEntries: PlanDisplayPayload["entries"] | null = null;
+  private lastPlanEditAt = 0;
+  private planTimer: NodeJS.Timeout | null = null;
   private stepCount = 0;
   private contextUsage = 0;
   private finished = false;
@@ -144,9 +149,26 @@ export class TurnRenderer {
         }
         break;
       }
+      case "PlanDisplay": {
+        const p = event.params.payload as PlanDisplayPayload;
+        this.planEntries = Array.isArray(p.entries) ? p.entries : [];
+        if (this.planEntries.length === 0) {
+          this.deletePlanMessage().catch(console.error);
+        } else {
+          this.updatePlan().catch(console.error);
+        }
+        break;
+      }
       case "TurnEnd": {
         this.finished = true;
         this.flushEdit().catch(console.error);
+        // Flush any throttled plan update so the final state lands; the
+        // message itself stays in the thread.
+        if (this.planTimer) {
+          clearTimeout(this.planTimer);
+          this.planTimer = null;
+          this.updatePlanNow().catch(console.error);
+        }
         if (CONFIG.showThinking) {
           this.postThinking().catch(console.error);
         }
@@ -156,7 +178,7 @@ export class TurnRenderer {
         break;
       }
       // Silently ignore: TurnBegin, StepInterrupted, CompactionBegin, CompactionEnd,
-      // SubagentEvent, ApprovalResponse, HookTriggered, HookResolved, PlanDisplay
+      // SubagentEvent, ApprovalResponse, HookTriggered, HookResolved
     }
   }
 
@@ -475,6 +497,79 @@ export class TurnRenderer {
       statusMessages.set(this.channel.id, this.statusMessage);
     }
   }
+
+  private async updatePlan() {
+    if (!this.planEntries?.length) return;
+    const now = Date.now();
+    const elapsed = now - this.lastPlanEditAt;
+    if (this.planMessage && elapsed < STATUS_EDIT_MIN_INTERVAL_MS) {
+      // Throttle rapid edits like the status embed; the timer is trailing-edge
+      // so the final plan state always lands.
+      if (!this.planTimer) {
+        this.planTimer = setTimeout(() => {
+          this.planTimer = null;
+          this.updatePlanNow().catch(console.error);
+        }, STATUS_EDIT_MIN_INTERVAL_MS - elapsed);
+      }
+      return;
+    }
+    await this.updatePlanNow();
+  }
+
+  private async updatePlanNow() {
+    const entries = this.planEntries;
+    if (!entries?.length) return;
+    this.lastPlanEditAt = Date.now();
+    const content = "📋 **Plan**\n" + formatPlan(entries);
+    if (!this.planMessage) {
+      this.planMessage = await this.channel.send(content);
+      return;
+    }
+    try {
+      await this.planMessage.edit(content);
+    } catch {
+      // The old plan message was deleted — post a fresh one
+      this.planMessage = await this.channel.send(content);
+    }
+  }
+
+  private async deletePlanMessage() {
+    if (this.planTimer) {
+      clearTimeout(this.planTimer);
+      this.planTimer = null;
+    }
+    const msg = this.planMessage;
+    this.planMessage = null;
+    if (msg) {
+      try {
+        await msg.delete();
+      } catch {
+        // ignore — message may already be gone
+      }
+    }
+  }
+}
+
+// Renders plan entries as a checklist, capping the body so the message
+// (including the "📋 **Plan**" prefix) stays under Discord's 2000-char limit.
+function formatPlan(entries: PlanDisplayPayload["entries"]): string {
+  let body = "";
+  let shown = 0;
+  for (const entry of entries) {
+    const icon =
+      entry.status === "completed" ? "✅" : entry.status === "in_progress" ? "🔄" : "⬜";
+    let text = (entry.content ?? "").replace(/\s+/g, " ").trim();
+    if (text.length > 120) text = text.slice(0, 119) + "…";
+    const line = `${icon} ${text}`;
+    // Leave headroom for a possible "…and N more" footer
+    if (body.length + line.length + 40 > 1900) break;
+    body += (body ? "\n" : "") + line;
+    shown++;
+  }
+  if (shown < entries.length) {
+    body += `\n…and ${entries.length - shown} more`;
+  }
+  return body;
 }
 
 function splitMarkdown(text: string, maxLen: number): string[] {

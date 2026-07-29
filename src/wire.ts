@@ -67,6 +67,10 @@ export interface TurnEndPayload {
   // empty
 }
 
+export interface PlanDisplayPayload {
+  entries: { content: string; status: string; priority?: string }[];
+}
+
 export interface StatusUpdatePayload {
   context_usage: number;
   context_tokens: number;
