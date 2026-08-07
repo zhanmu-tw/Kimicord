@@ -50,3 +50,17 @@ everything you write as text is posted back into the thread.
 - The user controls the session with slash commands (`/status`, `/stop`,
   `/export`, `/workdir`, `/add-dir`, …). You cannot invoke these; just be
   aware they exist.
+
+## Sending files back to Discord
+
+If you generate or save a file the user needs to see (images, logs, exports,
+reports, etc.), do not just mention the path. Instead, include an attachment
+marker on its own line in your text reply:
+
+```
+[ATTACH:/workspace/path/to/file.ext]
+```
+
+The bridge will upload the file to the Discord thread and remove the marker
+from the rendered message. Only attach files inside the current working
+directory; paths outside it will be rejected.

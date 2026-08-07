@@ -19,9 +19,9 @@ import {
   PlanDisplayPayload,
 } from "./wire.js";
 import { CONFIG } from "./config.js";
-import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
+import path, { join as pathJoin } from "node:path";
 
 type SendableChannel = ThreadChannel | TextChannel | NewsChannel | ForumChannel;
 
@@ -94,6 +94,7 @@ export class TurnRenderer {
             this.lastExportPath = exportPath;
           }
           this.textBuffer += textPart;
+          this.processAttachmentMarkers();
           this.scheduleEdit();
         } else if (p.type === "think" && CONFIG.showThinking) {
           this.thinkBuffer += (p as ContentPartThinkPayload).think;
@@ -318,6 +319,37 @@ export class TurnRenderer {
       console.error("Failed to write temp output file:", e);
       return null;
     }
+  }
+
+  private processAttachmentMarkers() {
+    const attachRegex = /\[ATTACH:([^\]]+)\]/g;
+    let match: RegExpExecArray | null;
+    const pathsToSend: string[] = [];
+    // Collect all markers first, then remove them from the buffer.
+    while ((match = attachRegex.exec(this.textBuffer)) !== null) {
+      const filePath = match[1]?.trim();
+      if (filePath) pathsToSend.push(filePath);
+    }
+    if (pathsToSend.length > 0) {
+      this.textBuffer = this.textBuffer.replace(attachRegex, "").trimStart();
+      for (const filePath of pathsToSend) {
+        this.sendAttachment(filePath).catch(console.error);
+      }
+    }
+  }
+
+  private async sendAttachment(filePath: string) {
+    const resolved = path.resolve(filePath);
+    const workDirResolved = path.resolve(this.workDir);
+    if (!resolved.startsWith(workDirResolved + path.sep)) {
+      await this.channel.send(`⚠️ Attachment rejected (outside working directory): \`${filePath}\``);
+      return;
+    }
+    if (!existsSync(resolved)) {
+      await this.channel.send(`⚠️ Attachment not found: \`${filePath}\``);
+      return;
+    }
+    await this.channel.send({ files: [resolved] });
   }
 
   private async postThinking() {
