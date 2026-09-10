@@ -591,7 +591,7 @@ export class KimiSession extends EventEmitter {
 
   private handleServerRequest(msg: AcpServerRequest) {
     // The ACP spec names this "session/requestPermission", but kimi-code
-    // 0.29.2 emits the snake_case "session/request_permission". Accept both —
+    // 0.42.0 emits the snake_case "session/request_permission". Accept both —
     // answering -32601 here makes kimi treat the request as user-rejected.
     if (msg.method !== "session/requestPermission" && msg.method !== "session/request_permission") {
       // Never leave the agent blocked on a request we don't understand.

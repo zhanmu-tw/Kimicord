@@ -28,9 +28,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install the Kimi Code CLI (self-contained binary, glibc only) into /usr/local
 # so `kimi` is on PATH for the non-root user. Pinned for reproducible builds;
 # bump KIMI_VERSION to upgrade.
-ARG KIMI_VERSION=0.29.2
+ARG KIMI_VERSION=0.42.0
 RUN curl -fsSL https://code.kimi.com/kimi-code/install.sh \
     | KIMI_VERSION=${KIMI_VERSION} KIMI_INSTALL_DIR=/usr/local KIMI_NO_MODIFY_PATH=1 bash
+
+# uv/uvx so MCP servers declared with `command: "uvx"` can run inside the
+# container. The binaries are statically linked; pinned for reproducible
+# builds. uvx downloads a managed Python on first use into the node user's
+# home, so no system Python is needed here.
+COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
