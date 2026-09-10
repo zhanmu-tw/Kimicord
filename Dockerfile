@@ -38,6 +38,42 @@ RUN curl -fsSL https://code.kimi.com/kimi-code/install.sh \
 # home, so no system Python is needed here.
 COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /uvx /usr/local/bin/
 
+# agent-browser: browser automation CLI (native binary installed via npm) so
+# agents can drive a real browser. Pinned for reproducible builds; bump
+# AGENT_BROWSER_VERSION to upgrade.
+ARG AGENT_BROWSER_VERSION=0.37.1
+RUN npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
+    && npm cache clean --force
+
+# Provide a Chrome/Chromium binary plus its Linux system libraries.
+# Chrome for Testing has no Linux ARM64 build, so:
+#   - amd64: `agent-browser install --with-deps` downloads Chrome for Testing
+#     into root's home and apt-installs its libraries. The binary is then
+#     relocated to a root-owned, world-readable path — the `node` user cannot
+#     execute files under /root, and the runtime tmpfs on
+#     /home/node/.agent-browser would shadow anything in a home directory.
+#   - arm64: Debian's `chromium` package (pulls in its own libraries).
+# Either way the browser ends up at the stable path /opt/agent-browser/chrome
+# so the ENV below doesn't depend on agent-browser's internal layout.
+# `install --with-deps` exits nonzero on failure, doubling as a build gate.
+RUN set -e; \
+    mkdir -p /opt/agent-browser; \
+    if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends chromium \
+        && rm -rf /var/lib/apt/lists/* \
+        && ln -s "$(readlink -f "$(command -v chromium)")" /opt/agent-browser/chrome; \
+    else \
+        agent-browser install --with-deps \
+        && rm -rf /var/lib/apt/lists/* \
+        && CHROME_BIN="$(find /root -name chrome -type f -print -quit)" \
+        && test -n "$CHROME_BIN" \
+        && mv "$(dirname "$CHROME_BIN")" /opt/agent-browser/chrome-linux \
+        && chmod -R a+rX /opt/agent-browser \
+        && ln -s /opt/agent-browser/chrome-linux/chrome /opt/agent-browser/chrome; \
+    fi
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/agent-browser/chrome
+
 WORKDIR /app
 
 # Copy only built artifacts and production dependencies
@@ -46,11 +82,33 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY entrypoint.sh AGENTS.md.example ./
 
+# User-scope skills for the Kimi Code CLI (read from ~/.agents/skills/). The
+# agent-browser stub tells agents the CLI exists; find-skills lets them
+# discover more skills. Vendored under docker/skills/ for deterministic builds.
+COPY docker/skills/ /home/node/.agents/skills/
+
 # Run as the built-in non-root `node` user (uid 1000). Make the data dir, the
-# Kimi Code CLI config dir, and the default workspace writable by that user.
+# Kimi Code CLI config dir, the skills dir, the agent-browser state dir (so a
+# named volume mounted there inherits node ownership), and the default
+# workspace writable by that user.
 RUN chmod +x /app/entrypoint.sh \
-    && mkdir -p /app/data /home/node/.kimi-code /workspace \
-    && chown -R node:node /app/data /home/node/.kimi-code /workspace
+    && mkdir -p /app/data /home/node/.kimi-code /home/node/.agent-browser /workspace \
+    && chown -R node:node /app/data /home/node/.kimi-code /home/node/.agent-browser /home/node/.agents /workspace
+
+# Build-time gate, run as the runtime user with HOME forced to the node home
+# (writable in the image layer; the tmpfs on /home/node/.agent-browser only
+# exists at runtime via compose). `doctor --quick` skips doctor's live launch
+# test, which can never pass here: BuildKit RUN blocks Chrome's user-namespace
+# sandbox, and doctor's launch test ignores config/--args overrides. The
+# explicit open/close below is the real launch gate — it verifies CLI, system
+# libraries, and the relocated executable end to end. AGENT_BROWSER_ARGS must
+# be comma-separated and passed to every command (even close launches a
+# browser process). At container runtime, Docker's default seccomp profile
+# lets the sandbox run, so no --no-sandbox config is baked into the image.
+RUN export AB="env HOME=/home/node AGENT_BROWSER_ARGS=--no-sandbox,--disable-gpu"; \
+    runuser -u node -- $AB agent-browser doctor --offline --quick \
+    && runuser -u node -- $AB agent-browser open about:blank \
+    && runuser -u node -- $AB agent-browser close
 
 USER node
 ENTRYPOINT ["/app/entrypoint.sh"]

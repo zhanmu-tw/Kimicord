@@ -39,6 +39,13 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      # agent-browser state (sessions, cookies, user-data dirs). The root
+      # filesystem is read-only, and browser state is ephemeral by design —
+      # wiped when the container is recreated (a plain `restart` keeps it).
+      # For persistent logins, use a named volume instead.
+      # uid/gid required: a plain tmpfs mounts root-owned and the node user
+      # could not write its daemon socket there.
+      - /home/node/.agent-browser:rw,uid=1000,gid=1000
     healthcheck:
       # Any HTTP response means the dashboard is up (401 without a key is fine).
       test:

@@ -51,6 +51,23 @@ everything you write as text is posted back into the thread.
   `/export`, `/workdir`, `/add-dir`, …). You cannot invoke these; just be
   aware they exist.
 
+## Browser automation
+
+`agent-browser` is installed globally, with a Chrome binary baked into the
+image. Typical workflow:
+
+```bash
+agent-browser open https://example.com
+agent-browser snapshot -i        # interactive snapshot; elements get @eN refs
+agent-browser click @e3          # or fill @e2 "text", screenshot out.png, ...
+agent-browser close
+```
+
+Browser state (cookies, sessions) lives in `~/.agent-browser`, an ephemeral
+tmpfs — it is wiped whenever the container is recreated, so logins do not
+persist. Run `agent-browser skills get core` for the full usage guide and
+command reference.
+
 ## Sending files back to Discord
 
 If you generate or save a file the user needs to see (images, logs, exports,

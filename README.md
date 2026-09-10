@@ -178,6 +178,47 @@ through the volume mounts:
   `kimicord/workspace` (or inside individual project directories under it)
   applies to sessions working in that tree.
 
+## Browser automation & baked skills
+
+The image ships two [skills](https://skills.sh) that Kimi Code picks up from
+`/home/node/.agents/skills/` inside the container (vendored from
+`docker/skills/`):
+
+- **agent-browser** — browser automation CLI, with a Chrome/Chromium binary
+  and its Linux system libraries baked into the image (Chrome for Testing on
+  amd64; Debian's `chromium` package on arm64, since Chrome for Testing has
+  no Linux ARM64 build). Agents can open pages, snapshot the accessibility
+  tree, click/fill elements, and take screenshots with zero first-run setup.
+  The CLI is pinned via the `AGENT_BROWSER_VERSION` build arg in the
+  `Dockerfile` (bump it and rebuild to upgrade). The browser lives at
+  `/opt/agent-browser/chrome`, wired up via the `AGENT_BROWSER_EXECUTABLE_PATH`
+  env var set in the image. Chrome's sandbox works unassisted at container
+  runtime (Docker's default seccomp profile allows it), so no `--no-sandbox`
+  config is baked in.
+- **find-skills** — lets agents discover and install further skills at
+  runtime.
+
+Browser state (cookies, sessions, user-data dirs) lives in
+`/home/node/.agent-browser`, which the compose file mounts as an in-memory
+**tmpfs — it is wiped whenever the container is recreated (e.g.
+`docker compose down && up`), by design**; a plain `docker compose restart`
+keeps it. If you want persistent logins, replace that tmpfs entry in
+`docker-compose.yml` with a named volume:
+
+```yaml
+    tmpfs:
+      - /tmp
+    volumes:
+      # ... existing volumes ...
+      - agent-browser-state:/home/node/.agent-browser
+
+volumes:
+  agent-browser-state:
+```
+
+Note that Chrome plus its system libraries add roughly **400–500 MB** to the
+image.
+
 ## Known limitations
 
 Kimicord talks to the Kimi Code CLI over ACP (Agent Client Protocol). Some
