@@ -56,6 +56,8 @@ RUN npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
 # Either way the browser ends up at the stable path /opt/agent-browser/chrome
 # so the ENV below doesn't depend on agent-browser's internal layout.
 # `install --with-deps` exits nonzero on failure, doubling as a build gate.
+# It shells out to `sudo apt-get ...`, which doesn't exist in this image — a
+# temporary passthrough shim stands in for it and is removed in the same layer.
 RUN set -e; \
     mkdir -p /opt/agent-browser; \
     if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
@@ -64,7 +66,11 @@ RUN set -e; \
         && rm -rf /var/lib/apt/lists/* \
         && ln -s "$(readlink -f "$(command -v chromium)")" /opt/agent-browser/chrome; \
     else \
-        agent-browser install --with-deps \
+        printf '#!/bin/sh\nexec "$@"\n' > /usr/local/bin/sudo \
+        && chmod +x /usr/local/bin/sudo \
+        && apt-get update \
+        && agent-browser install --with-deps \
+        && rm -f /usr/local/bin/sudo \
         && rm -rf /var/lib/apt/lists/* \
         && CHROME_BIN="$(find /root -name chrome -type f -print -quit)" \
         && test -n "$CHROME_BIN" \
@@ -97,17 +103,18 @@ RUN chmod +x /app/entrypoint.sh \
 
 # Build-time gate, run as the runtime user with HOME forced to the node home
 # (writable in the image layer; the tmpfs on /home/node/.agent-browser only
-# exists at runtime via compose). `doctor --quick` skips doctor's live launch
-# test, which can never pass here: BuildKit RUN blocks Chrome's user-namespace
-# sandbox, and doctor's launch test ignores config/--args overrides. The
-# explicit open/close below is the real launch gate — it verifies CLI, system
-# libraries, and the relocated executable end to end. AGENT_BROWSER_ARGS must
-# be comma-separated and passed to every command (even close launches a
-# browser process). At container runtime, Docker's default seccomp profile
-# lets the sandbox run, so no --no-sandbox config is baked into the image.
+# exists at runtime via compose). The gate is an explicit open/close launch
+# test — it verifies CLI, system libraries, and the relocated executable end
+# to end. `agent-browser doctor` is NOT used: its Chrome check ignores
+# AGENT_BROWSER_EXECUTABLE_PATH (v0.37.1) and reports a false "No Chrome
+# binary found", and its own launch test ignores config/--args overrides so
+# it can never pass under BuildKit, which blocks Chrome's user-namespace
+# sandbox. AGENT_BROWSER_ARGS must be comma-separated and passed to every
+# command (even close launches a browser process). At container runtime,
+# Docker's default seccomp profile lets the sandbox run, so no --no-sandbox
+# config is baked into the image.
 RUN export AB="env HOME=/home/node AGENT_BROWSER_ARGS=--no-sandbox,--disable-gpu"; \
-    runuser -u node -- $AB agent-browser doctor --offline --quick \
-    && runuser -u node -- $AB agent-browser open about:blank \
+    runuser -u node -- $AB agent-browser open about:blank \
     && runuser -u node -- $AB agent-browser close
 
 USER node
